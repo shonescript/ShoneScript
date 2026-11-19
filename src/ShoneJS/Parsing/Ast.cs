@@ -1,0 +1,24 @@
+namespace ShoneJS.Parsing;
+
+public abstract record Stmt;
+public sealed record BlockStmt(List<Stmt> Body) : Stmt;
+public sealed record VarStmt(TokenKind Kind, string Name, Expr? Init) : Stmt;
+public sealed record FunctionStmt(string Name, List<string> Parameters, BlockStmt Body) : Stmt;
+public sealed record ExprStmt(Expr Expression) : Stmt;
+public sealed record IfStmt(Expr Test, Stmt Then, Stmt? Else) : Stmt;
+public sealed record WhileStmt(Expr Test, Stmt Body) : Stmt;
+public sealed record ReturnStmt(Expr? Value) : Stmt;
+public sealed record ThrowStmt(Expr Value) : Stmt;
+public abstract record Expr;
+public sealed record LiteralExpr(object? Value) : Expr;
+public sealed record TemplateExpr(string Text) : Expr;
+public sealed record IdentifierExpr(string Name) : Expr;
+public sealed record UnaryExpr(TokenKind Op, Expr Value) : Expr;
+public sealed record BinaryExpr(Expr Left, TokenKind Op, Expr Right) : Expr;
+public sealed record AssignExpr(Expr Target, Expr Value) : Expr;
+public sealed record MemberExpr(Expr Target, Expr Key) : Expr;
+public sealed record CallExpr(Expr Target, List<Expr> Arguments) : Expr;
+public sealed record FunctionExpr(List<string> Parameters, BlockStmt Body) : Expr;
+public sealed record ArrayExpr(List<Expr> Items) : Expr;
+public sealed record ObjectExpr(List<(string Key, Expr Value)> Properties) : Expr;
+public sealed record ConditionalExpr(Expr Test, Expr Then, Expr Else) : Expr;
