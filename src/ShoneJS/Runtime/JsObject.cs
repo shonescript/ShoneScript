@@ -1,24 +1,270 @@
+using System.Collections.Generic;
+using System.Globalization;
+
 namespace ShoneJS.Runtime;
 
 public class JsObject
 {
-    private readonly Dictionary<string, JsValue> _properties = new(StringComparer.Ordinal);
-    public JsObject? Prototype { get; set; }
-    public virtual JsValue Get(string key) => _properties.TryGetValue(key, out var v) ? v : Prototype?.Get(key) ?? JsValue.Undefined;
-    public virtual void Set(string key, JsValue value) => _properties[key] = value;
-    public bool HasOwn(string key) => _properties.ContainsKey(key);
-    public IEnumerable<KeyValuePair<string, JsValue>> Properties => _properties;
+    private readonly OrderedDictionary<string, PropertyDescriptor> _properties = new(StringComparer.Ordinal);
+    private JsObject? _prototype;
+    private bool _isExtensible = true;
+
+    public JsObject? Prototype
+    {
+        get => GetPrototypeOf();
+        set
+        {
+            if (!SetPrototypeOf(value))
+                throw JsException.TypeError("Cannot change the object's prototype");
+        }
+    }
+
+    public virtual JsObject? GetPrototypeOf() => _prototype;
+    internal virtual bool HasOrdinaryPrototypeLookup => true;
+
+    public virtual bool SetPrototypeOf(JsObject? prototype)
+    {
+        if (ReferenceEquals(prototype, _prototype))
+            return true;
+        if (!IsExtensible)
+            return false;
+
+        var visited = new HashSet<JsObject>(ReferenceEqualityComparer.Instance) { this };
+        for (var current = prototype; current is not null; current = current.GetPrototypeOf())
+        {
+            if (!visited.Add(current))
+                return false;
+            if (!current.HasOrdinaryPrototypeLookup) break;
+        }
+
+        _prototype = prototype;
+        return true;
+    }
+
+    public virtual bool IsExtensible => _isExtensible;
+
+    public virtual bool PreventExtensions()
+    {
+        _isExtensible = false;
+        return true;
+    }
+
+    public virtual PropertyDescriptor? GetOwnProperty(string key) => _properties.GetValueOrDefault(key);
+
+    public virtual bool DefineOwnProperty(string key, PropertyDescriptor descriptor)
+    {
+        descriptor.Validate();
+        if (_properties.TryGetValue(key, out var current))
+        {
+            if (!descriptor.IsCompatibleWith(current))
+                return false;
+            _properties[key] = descriptor.ApplyTo(current);
+        }
+        else
+        {
+            if (!IsExtensible)
+                return false;
+            _properties.Add(key, descriptor.Complete());
+        }
+        return true;
+    }
+
+    public virtual bool Delete(string key)
+    {
+        if (!_properties.TryGetValue(key, out var descriptor))
+            return true;
+        return descriptor.Configurable == true && _properties.Remove(key);
+    }
+
+    public virtual IEnumerable<string> OwnPropertyKeys() => _properties.Keys
+        .Select(key => (Key: key, Index: TryArrayIndex(key, out var index) ? index : uint.MaxValue))
+        .OrderBy(entry => entry.Index)
+        .Select(entry => entry.Key)
+        .ToArray();
+
+    public bool HasOwn(string key) => GetOwnProperty(key) is not null;
+
+    public virtual bool HasProperty(string key) => HasOwn(key) || GetPrototypeOf()?.HasProperty(key) == true;
+
+    public virtual JsValue Get(string key) => Get(key, JsValue.From(this));
+
+    public virtual JsValue Get(string key, JsValue receiver)
+    {
+        var descriptor = GetOwnProperty(key);
+        if (descriptor is null)
+            return GetPrototypeOf()?.Get(key, receiver) ?? JsValue.Undefined;
+        if (descriptor.IsDataDescriptor)
+            return descriptor.Value!.Value;
+        return descriptor.Get?.Data is JsFunction getter ? getter.Call(receiver, []) : JsValue.Undefined;
+    }
+
+    public virtual void Set(string key, JsValue value) => Set(key, value, JsValue.From(this));
+
+    public virtual bool Set(string key, JsValue value, JsValue receiver)
+    {
+        var descriptor = GetOwnProperty(key);
+        if (descriptor is null && GetPrototypeOf() is { } prototype)
+            return prototype.Set(key, value, receiver);
+
+        if (descriptor?.IsAccessorDescriptor == true)
+        {
+            if (descriptor.Set?.Data is not JsFunction setter)
+                return false;
+            setter.Call(receiver, [value]);
+            return true;
+        }
+
+        if (descriptor?.Writable == false || receiver.Data is not JsObject target)
+            return false;
+
+        var existing = target.GetOwnProperty(key);
+        if (existing is null)
+            return target.DefineOwnProperty(key, PropertyDescriptor.Data(value, writable: true, enumerable: true, configurable: true));
+        if (existing.IsAccessorDescriptor || existing.Writable != true)
+            return false;
+        return target.DefineOwnProperty(key, new PropertyDescriptor { Value = value });
+    }
+
+    public IEnumerable<KeyValuePair<string, JsValue>> Properties
+    {
+        get
+        {
+            foreach (var key in OwnPropertyKeys())
+            {
+                if (GetOwnProperty(key)?.Enumerable == true)
+                    yield return new KeyValuePair<string, JsValue>(key, Get(key));
+            }
+        }
+    }
+
+    internal static bool TryArrayIndex(string key, out uint index)
+    {
+        index = 0;
+        if (key.Length is 0 or > 10 || (key.Length > 1 && key[0] == '0'))
+            return false;
+        foreach (var character in key)
+        {
+            if (character is < '0' or > '9')
+                return false;
+        }
+        return uint.TryParse(key, NumberStyles.None, CultureInfo.InvariantCulture, out index) && index < uint.MaxValue;
+    }
 }
+
 public sealed class JsArray : JsObject
 {
-    private readonly List<JsValue> _items = [];
-    public int Length => _items.Count;
-    public void Add(JsValue value) => _items.Add(value);
-    public override JsValue Get(string key) => key == "length" ? JsValue.From((double)Length) : int.TryParse(key, out var i) && i >= 0 && i < Length ? _items[i] : base.Get(key);
-    public override void Set(string key, JsValue value) { if (key == "length" && value.ToNumber() >= 0) { var n = (int)value.ToNumber(); while (_items.Count > n) _items.RemoveAt(_items.Count - 1); while (_items.Count < n) _items.Add(JsValue.Undefined); } else if (int.TryParse(key, out var i) && i >= 0 && i < 100000) { while (_items.Count <= i) _items.Add(JsValue.Undefined); _items[i] = value; } else base.Set(key, value); }
+    public JsArray() => base.DefineOwnProperty("length", PropertyDescriptor.Data(JsValue.From(0d), writable: true));
+
+    public int Length => checked((int)ArrayLength);
+    public uint ArrayLength => (uint)GetOwnProperty("length")!.Value!.Value.ToNumber();
+
+    public void Add(JsValue value)
+    {
+        var length = ArrayLength;
+        if (length == uint.MaxValue)
+            throw JsException.RangeError("Invalid array length");
+        if (!DefineOwnProperty(length.ToString(CultureInfo.InvariantCulture), PropertyDescriptor.Data(value, writable: true, enumerable: true, configurable: true)))
+            throw JsException.TypeError("Cannot add an array element");
+    }
+
+    public override bool DefineOwnProperty(string key, PropertyDescriptor descriptor)
+    {
+        if (key == "length")
+            return DefineLength(descriptor);
+        if (!TryArrayIndex(key, out var index))
+            return base.DefineOwnProperty(key, descriptor);
+
+        descriptor.Validate();
+        var lengthDescriptor = GetOwnProperty("length")!;
+        var length = (uint)lengthDescriptor.Value!.Value.ToNumber();
+        if (index >= length && lengthDescriptor.Writable == false)
+            return false;
+        if (!base.DefineOwnProperty(key, descriptor))
+            return false;
+        if (index >= length)
+            base.DefineOwnProperty("length", new PropertyDescriptor { Value = JsValue.From(index + 1d) });
+        return true;
+    }
+
+    private bool DefineLength(PropertyDescriptor descriptor)
+    {
+        descriptor.Validate();
+        if (descriptor.Value is not { } value)
+            return base.DefineOwnProperty("length", descriptor);
+
+        var number = value.ToNumber();
+        if (!double.IsFinite(number) || number < 0 || number > uint.MaxValue || Math.Truncate(number) != number)
+            throw JsException.RangeError("Invalid array length");
+
+        var length = (uint)number;
+        descriptor = descriptor with { Value = JsValue.From((double)length) };
+        if (length >= ArrayLength)
+            return base.DefineOwnProperty("length", descriptor);
+
+        // Leave length writable until the index deletions finish, so it can be restored if a deletion fails.
+        var makeReadOnly = descriptor.Writable == false;
+        var pending = makeReadOnly ? descriptor with { Writable = true } : descriptor;
+        if (!base.DefineOwnProperty("length", pending))
+            return false;
+
+        var indicesToDelete = OwnPropertyKeys()
+            .Select(key => (Key: key, Index: TryArrayIndex(key, out var index) ? (uint?)index : null))
+            .Where(entry => entry.Index >= length)
+            .OrderByDescending(entry => entry.Index);
+        foreach (var entry in indicesToDelete)
+        {
+            if (Delete(entry.Key))
+                continue;
+            base.DefineOwnProperty("length", new PropertyDescriptor
+            {
+                Value = JsValue.From(entry.Index!.Value + 1d),
+                Writable = makeReadOnly ? false : null
+            });
+            return false;
+        }
+
+        if (makeReadOnly)
+            base.DefineOwnProperty("length", new PropertyDescriptor { Writable = false });
+        return true;
+    }
 }
-public sealed class JsFunction(Func<JsValue[], JsValue> call, int arity = 0)
+
+public sealed class JsFunction : JsObject
 {
-    public int Arity { get; } = arity;
-    public JsValue Call(params JsValue[] args) => call(args);
+    private readonly Func<JsValue, JsValue[], JsValue> _call;
+
+    public JsFunction(Func<JsValue[], JsValue> call, int arity = 0)
+        : this((_, args) => call(args), arity) { }
+
+    public JsFunction(Func<JsValue, JsValue[], JsValue> call, int arity = 0)
+    {
+        _call = call;
+        Arity = arity;
+        DefineOwnProperty("length", PropertyDescriptor.Data(JsValue.From((double)arity), configurable: true));
+    }
+
+    public int Arity { get; }
+    internal Func<JsValue[], JsValue>? NativeConstruct { get; init; }
+    internal JsObject? DefaultConstructionPrototype { get; init; }
+    internal bool IsConstructor => NativeConstruct is not null || DefaultConstructionPrototype is not null;
+
+    public JsValue Call(params JsValue[] args) => Call(JsValue.Undefined, args);
+
+    public JsValue Call(JsValue receiver, JsValue[] args) => _call(receiver, args);
+
+    internal JsValue Construct(JsValue[] args, JsFunction? newTarget = null)
+    {
+        newTarget ??= this;
+        if (!IsConstructor || !newTarget.IsConstructor)
+            throw JsException.TypeError("Value is not a constructor");
+        if (NativeConstruct is { } construct)
+        {
+            if (ReferenceEquals(newTarget, this)) return construct(args);
+            throw new NotSupportedException("Alternate newTarget for native constructors is not implemented");
+        }
+        var prototype = newTarget.Get("prototype").Data as JsObject ?? newTarget.DefaultConstructionPrototype ?? DefaultConstructionPrototype;
+        var receiver = JsValue.From(new JsObject { Prototype = prototype });
+        var result = Call(receiver, args);
+        return result.Data is JsObject ? result : receiver;
+    }
 }

@@ -19,7 +19,7 @@ public class EngineTests
 
     [Fact] public void CoercesStringsAndConditions() => Assert.Equal("v=6", new Engine().Evaluate("let x = 2; `v=${x * 3}`").ToJsString());
     [Fact] public void LexerTracksSyntaxLocation() { var ex = Assert.Throws<JsSyntaxException>(() => new Lexer("let x = @").Scan()); Assert.Equal(1, ex.Line); Assert.Equal(9, ex.Column); }
-    [Fact] public void ThrowsForUnknownIdentifier() => Assert.Throws<InvalidOperationException>(() => new Engine().Evaluate("missing"));
+    [Fact] public void ThrowsForUnknownIdentifier() => Assert.Equal("ReferenceError", Assert.Throws<JsException>(() => new Engine().Evaluate("missing")).ErrorName);
     [Fact] public void ExposesPersistentGlobalBindings() { var engine = new Engine(); engine.SetGlobal("seed", JsValue.From(4d)); Assert.Equal(7d, (double)engine.Evaluate("seed + 3").Data!); }
     [Fact] public void EnforcesLoopExecutionBudget() => Assert.Throws<InvalidOperationException>(() => new Engine(new EngineOptions { MaximumLoopIterations = 3 }).Evaluate("while (true) {}"));
 }

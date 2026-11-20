@@ -1,0 +1,2 @@
+# Keep the pinned Test262 files byte-identical across checkouts.
+upstream/** -text
