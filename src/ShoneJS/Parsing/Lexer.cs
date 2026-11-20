@@ -84,8 +84,8 @@ public sealed class Lexer(string source)
                 '=' => Match('=') ? Match('=') ? TokenKind.StrictEqual : TokenKind.EqualEqual : TokenKind.Equal,
                 '<' => Match('<') ? Match('=') ? TokenKind.ShiftLeftEqual : TokenKind.ShiftLeft : Match('=') ? TokenKind.LessEqual : TokenKind.Less,
                 '>' => ScanGreaterThan(),
-                '&' => Match('&') ? TokenKind.AndAnd : Match('=') ? TokenKind.BitwiseAndEqual : TokenKind.BitwiseAnd,
-                '|' => Match('|') ? TokenKind.OrOr : Match('=') ? TokenKind.BitwiseOrEqual : TokenKind.BitwiseOr,
+                '&' => Match('&') ? Match('=') ? TokenKind.AndAndEqual : TokenKind.AndAnd : Match('=') ? TokenKind.BitwiseAndEqual : TokenKind.BitwiseAnd,
+                '|' => Match('|') ? Match('=') ? TokenKind.OrOrEqual : TokenKind.OrOr : Match('=') ? TokenKind.BitwiseOrEqual : TokenKind.BitwiseOr,
                 '^' => Match('=') ? TokenKind.BitwiseXorEqual : TokenKind.BitwiseXor,
                 _ => throw Error($"Unexpected character '{ch}'", start)
             }, start);

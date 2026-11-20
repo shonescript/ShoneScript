@@ -8,6 +8,7 @@ public enum JsType { Undefined, Null, Boolean, Number, String, Object, Function,
 public sealed class JsSymbol(string? description = null)
 {
     public string? Description { get; } = description;
+    internal string? RegistryKey { get; init; }
     public override string ToString() => $"Symbol({Description})";
 }
 

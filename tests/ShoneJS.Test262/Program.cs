@@ -158,9 +158,8 @@ internal static class Program
     {
         // Wall-clock enforcement belongs to the parent process, including for loops and recursion.
         var engine = new Engine(new EngineOptions { MaximumLoopIterations = int.MaxValue });
-        string source = mode == Mode.Strict ? "\"use strict\";\n" + test.Source : test.Source;
         ParsedScript script;
-        try { script = engine.ParseScript(source); }
+        try { script = engine.ParseScript(test.Source, forceStrict: mode == Mode.Strict); }
         catch (JsSyntaxException error)
         {
             if (test.Negative is { Phase: "parse", Type: "SyntaxError" }) return;
@@ -170,7 +169,7 @@ internal static class Program
         if (test.Negative is { Phase: "parse" } parseNegative)
             throw new InvalidOperationException($"Expected {parseNegative.Type} during parse, but parsing succeeded.");
         if (mode == Mode.Strict && !script.IsStrict)
-            throw new InvalidOperationException("The injected strict directive did not produce a strict script.");
+            throw new InvalidOperationException("The strict parse option did not produce a strict script.");
 
         int completions = 0;
         string? asyncFailure = null;

@@ -26,10 +26,12 @@ public sealed class Engine
     public EngineOptions Options { get; }
     public Engine(EngineOptions? options = null) => Options = options ?? new EngineOptions();
 
-    public ParsedScript ParseScript(string source)
+    public ParsedScript ParseScript(string source) => ParseScript(source, forceStrict: false);
+
+    public ParsedScript ParseScript(string source, bool forceStrict)
     {
         ArgumentNullException.ThrowIfNull(source);
-        var parser = new Parser(new Lexer(source).Scan());
+        var parser = new Parser(new Lexer(source).Scan(), forceStrict: forceStrict);
         var statements = parser.Parse();
         return new ParsedScript(statements, parser.IsStrict);
     }

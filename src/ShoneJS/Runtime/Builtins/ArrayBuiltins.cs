@@ -34,6 +34,8 @@ public static class ArrayBuiltins
             DefineArrayMethod("filter", 1, (obj, args) => Iterate(obj, args, Iteration.Filter));
             DefineArrayMethod("find", 1, (obj, args) => Iterate(obj, args, Iteration.Find));
             DefineArrayMethod("findIndex", 1, (obj, args) => Iterate(obj, args, Iteration.FindIndex));
+            DefineArrayMethod("findLast", 1, (obj, args) => Iterate(obj, args, Iteration.FindLast));
+            DefineArrayMethod("findLastIndex", 1, (obj, args) => Iterate(obj, args, Iteration.FindLastIndex));
             DefineArrayMethod("forEach", 1, (obj, args) => Iterate(obj, args, Iteration.ForEach));
             DefineArrayMethod("includes", 1, (obj, args) => Search(obj, args, SearchKind.Includes));
             DefineArrayMethod("indexOf", 1, (obj, args) => Search(obj, args, SearchKind.IndexOf));
@@ -49,6 +51,10 @@ public static class ArrayBuiltins
             DefineArrayMethod("slice", 2, Slice);
             DefineArrayMethod("some", 1, (obj, args) => Iterate(obj, args, Iteration.Some));
             DefineArrayMethod("splice", 2, Splice);
+            DefineArrayMethod("toReversed", 0, ToReversed);
+            DefineArrayMethod("toSorted", 1, ToSorted);
+            DefineArrayMethod("toSpliced", 2, ToSpliced);
+            DefineArrayMethod("with", 2, With);
             DefineMethod(Prototype, "toString", 0, ToString);
             DefineArrayMethod("unshift", 1, Unshift);
             setGlobal("Array", JsValue.From(constructor));
@@ -170,6 +176,91 @@ public static class ArrayBuiltins
             return JsValue.From(result);
         }
 
+        private JsValue ToReversed(JsObject obj, JsValue[] _)
+        {
+            var length = LengthOf(obj);
+            var result = NewArray(length);
+            for (long index = 0; index < length; index++)
+                CreateElement(result, Key(index), obj.Get(Key(length - index - 1)));
+            return JsValue.From(result);
+        }
+
+        private JsValue ToSorted(JsObject obj, JsValue[] args)
+        {
+            var length = LengthOf(obj);
+            var comparator = Argument(args, 0);
+            if (comparator.Type != JsType.Undefined && comparator.Data is not JsFunction)
+                throw JsException.TypeError("Comparator must be callable");
+
+            var values = new List<JsValue>((int)Math.Min(length, int.MaxValue));
+            for (long index = 0; index < length; index++)
+                values.Add(obj.Get(Key(index)));
+            var decorated = values.Select((value, index) => (Value: value, Index: index, Text: (string?)null)).ToArray();
+            if (comparator.Type == JsType.Undefined)
+            {
+                for (var index = 0; index < decorated.Length; index++)
+                    decorated[index].Text = AbstractOperations.IsNullish(decorated[index].Value) ? null : ToStringValue(decorated[index].Value);
+            }
+            Array.Sort(decorated, (left, right) =>
+            {
+                var leftNull = AbstractOperations.IsNullish(left.Value);
+                var rightNull = AbstractOperations.IsNullish(right.Value);
+                int order;
+                if (leftNull || rightNull)
+                    order = leftNull == rightNull ? 0 : leftNull ? 1 : -1;
+                else if (comparator.Data is JsFunction compare)
+                {
+                    var number = compare.Call(JsValue.Undefined, [left.Value, right.Value]).ToNumber();
+                    order = double.IsNaN(number) || number == 0 ? 0 : number < 0 ? -1 : 1;
+                }
+                else
+                    order = string.CompareOrdinal(left.Text, right.Text);
+                return order != 0 ? order : left.Index.CompareTo(right.Index);
+            });
+            var result = NewArray(length);
+            for (var index = 0; index < decorated.Length; index++)
+                CreateElement(result, Key(index), decorated[index].Value);
+            return JsValue.From(result);
+        }
+
+        private JsValue ToSpliced(JsObject obj, JsValue[] args)
+        {
+            var length = LengthOf(obj);
+            var start = RelativeIndex(Argument(args, 0), length);
+            var deleteCount = args.Length switch
+            {
+                0 => 0,
+                1 => length - start,
+                _ => (long)Math.Clamp(ToInteger(args[1]), 0, length - start)
+            };
+            var itemCount = Math.Max(args.Length - 2, 0);
+            var newLength = length - deleteCount + itemCount;
+            CheckSafeLength(newLength);
+            var result = NewArray(newLength);
+            long target = 0;
+            for (long index = 0; index < start; index++)
+                CreateElement(result, Key(target++), obj.Get(Key(index)));
+            for (var index = 0; index < itemCount; index++)
+                CreateElement(result, Key(target++), args[index + 2]);
+            for (var index = start + deleteCount; index < length; index++)
+                CreateElement(result, Key(target++), obj.Get(Key(index)));
+            return JsValue.From(result);
+        }
+
+        private JsValue With(JsObject obj, JsValue[] args)
+        {
+            var length = LengthOf(obj);
+            var index = ToInteger(Argument(args, 0));
+            var actualIndex = index < 0 ? length + index : index;
+            if (actualIndex < 0 || actualIndex >= length)
+                throw JsException.RangeError("Invalid index");
+            var replacement = Argument(args, 1);
+            var result = NewArray(length);
+            for (long position = 0; position < length; position++)
+                CreateElement(result, Key(position), position == actualIndex ? replacement : obj.Get(Key(position)));
+            return JsValue.From(result);
+        }
+
         private JsValue Splice(JsObject obj, JsValue[] args)
         {
             var length = LengthOf(obj);
@@ -204,7 +295,7 @@ public static class ArrayBuiltins
             return JsValue.From(removed);
         }
 
-        private enum Iteration { Every, Filter, Find, FindIndex, ForEach, Map, Some }
+        private enum Iteration { Every, Filter, Find, FindIndex, FindLast, FindLastIndex, ForEach, Map, Some }
 
         private JsValue Iterate(JsObject obj, JsValue[] args, Iteration operation)
         {
@@ -212,7 +303,7 @@ public static class ArrayBuiltins
             var callback = RequireCallback(args);
             var thisArg = Argument(args, 1);
             var receiver = JsValue.From(obj);
-            var visitHoles = operation is Iteration.Find or Iteration.FindIndex;
+            var visitHoles = operation is Iteration.Find or Iteration.FindIndex or Iteration.FindLast or Iteration.FindLastIndex;
             var result = operation switch
             {
                 Iteration.Map => NewResultArray(obj, length),
@@ -221,8 +312,9 @@ public static class ArrayBuiltins
             };
             long next = 0;
 
-            for (long index = 0; index < length; index++)
+            for (long step = 0; step < length; step++)
             {
+                var index = operation is Iteration.FindLast or Iteration.FindLastIndex ? length - step - 1 : step;
                 var key = Key(index);
                 if (!visitHoles && !obj.HasProperty(key))
                     continue;
@@ -236,6 +328,8 @@ public static class ArrayBuiltins
                     case Iteration.Some when selected.ToBoolean(): return JsValue.From(true);
                     case Iteration.Find when selected.ToBoolean(): return value;
                     case Iteration.FindIndex when selected.ToBoolean(): return indexValue;
+                    case Iteration.FindLast when selected.ToBoolean(): return value;
+                    case Iteration.FindLastIndex when selected.ToBoolean(): return indexValue;
                     case Iteration.Filter when selected.ToBoolean(): CreateElement(result!, Key(next++), value); break;
                     case Iteration.Map: CreateElement(result!, key, selected); break;
                 }
@@ -245,7 +339,8 @@ public static class ArrayBuiltins
             {
                 Iteration.Every => JsValue.From(true),
                 Iteration.Some => JsValue.From(false),
-                Iteration.FindIndex => Number(-1),
+                Iteration.FindIndex or Iteration.FindLastIndex => Number(-1),
+                Iteration.FindLast => JsValue.Undefined,
                 Iteration.Map or Iteration.Filter => JsValue.From(result!),
                 _ => JsValue.Undefined
             };

@@ -1,4 +1,4 @@
-using System.Numerics;
+using Sdcb.Arithmetic;
 using ShoneJS.Parsing;
 
 namespace ShoneJS.Tests;
@@ -211,7 +211,7 @@ public class ParserTests
     [InlineData("a && b ?? c")]
     [InlineData("a ?? b || c")]
     [InlineData("a || b ?? c")]
-    [InlineData("a ??= b")]
+    [InlineData("a?.b ??= c")]
     public void RejectsInvalidOptionalAndNullishSyntax(string source) =>
         Assert.Throws<JsSyntaxException>(() => ParserFor(source).ParseExpression());
 
@@ -233,6 +233,6 @@ public class ParserTests
         Assert.Equal("e", handling.CatchName);
         Assert.Equal(TokenKind.Instanceof,
             Assert.IsType<BinaryExpr>(Assert.IsType<ExprStmt>(Assert.Single(handling.CatchBody!.Body)).Expression).Op);
-        Assert.Equal(new BigInteger(255), Assert.IsType<BigIntExpr>(ParserFor("0xF_Fn").ParseExpression()).Value);
+        Assert.Equal(new BigInt(255), Assert.IsType<BigIntExpr>(ParserFor("0xF_Fn").ParseExpression()).Value);
     }
 }

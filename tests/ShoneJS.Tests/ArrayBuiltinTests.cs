@@ -52,6 +52,30 @@ public class ArrayBuiltinTests
     public void HandlesSparseArrayOperations(string script) =>
         Assert.True(new Engine().Evaluate(script).ToBoolean());
 
+    [Theory]
+    [InlineData("let a = [, 2, , 4]; let seen = ''; let context = {}; let value = a.findLast(function(v, i, source) { if (source !== a || this !== context) throw 'bad'; seen = seen + i; return i === 1; }, context); value === 2 && seen === '321'")]
+    [InlineData("let a = [, 2, , 4]; let seen = ''; a.findLastIndex(function(v, i) { seen = seen + i; return false; }) === -1 && seen === '3210'")]
+    [InlineData("let a = [, 3, 1].toReversed(); a.length === 3 && a[0] === 1 && a[1] === 3 && a[2] === undefined && a.hasOwnProperty(2)")]
+    [InlineData("let a = [10, 2, 1, 2].toSorted(); a.join() === '1,10,2,2' && [3, 1, 2].toSorted(function(a, b) { return a - b; }).join() === '1,2,3'")]
+    [InlineData("let a = [3, 1, 2].toSorted(function(a, b) { return 0; }); a.join() === '3,1,2'")]
+    [InlineData("let a = [0, , 2, 3].toSpliced(1, 2, 'x'); a.join() === '0,x,3' && a.hasOwnProperty(1)")]
+    [InlineData("let a = [, 2, 3].with(-1, 9); a.join() === ',2,9' && a.hasOwnProperty(0) && a[0] === undefined")]
+    [InlineData("let log = ''; let a = [1, 2, 3]; let b = a.toSpliced({valueOf: function() { log = log + 's'; return 1; }}, {valueOf: function() { log = log + 'd'; return 1; }}, 8); log === 'sd' && b.join() === '1,8,3' && a.join() === '1,2,3'")]
+    [InlineData("let log = ''; let a = [1, 2]; let b = a.with({valueOf: function() { log = log + 'i'; return 0; }}, 9); log === 'i' && b.join() === '9,2' && a.join() === '1,2'")]
+    public void SupportsChangeArrayByCopyMethods(string script) =>
+        Assert.True(new Engine().Evaluate(script).ToBoolean());
+
+    [Theory]
+    [InlineData("[].findLast(1)")]
+    [InlineData("[].findLastIndex(null)")]
+    [InlineData("[].toSorted(1)")]
+    public void RejectsInvalidNewArrayMethodArguments(string script) =>
+        Assert.Equal("TypeError", Assert.Throws<JsException>(() => new Engine().Evaluate(script)).ErrorName);
+
+    [Fact]
+    public void WithOutOfRangeIndexThrowsRangeError() =>
+        Assert.Equal("RangeError", Assert.Throws<JsException>(() => new Engine().Evaluate("[1].with(1, 2)")).ErrorName);
+
     [Fact]
     public void CallbackMethodsPreserveHolesOrVisitThemAsSpecified()
     {

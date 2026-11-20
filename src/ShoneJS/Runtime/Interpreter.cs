@@ -68,7 +68,9 @@ public sealed partial class Interpreter
             bigInt.DefineOwnProperty(name, PropertyDescriptor.Data(JsValue.From(method), writable: true, configurable: true));
         }
         SetGlobal("BigInt", JsValue.From(bigInt));
-        SetGlobal("Symbol", JsValue.From(new JsFunction(args => JsValue.From(new JsSymbol(args.Length == 0 || args[0].Type == JsType.Undefined ? null : args[0].ToJsString())), 0)));
+        InstallSymbol();
+        Builtins.WeakBuiltins.Install(SetGlobal, _objectPrototype, static symbol => symbol.RegistryKey is not null);
+        Builtins.TypedArrayBuiltins.Install(SetGlobal, _objectPrototype);
         foreach (var name in new[] { "Error", "TypeError", "ReferenceError", "RangeError", "SyntaxError", "EvalError", "URIError" })
         {
             var prototype = new JsObject { Prototype = _errorPrototypes.GetValueOrDefault("Error") ?? _objectPrototype };
@@ -80,6 +82,33 @@ public sealed partial class Interpreter
         }
         _promises = new Builtins.PromiseBuiltins(_objectPrototype, _arrayPrototype, AttachErrorPrototype);
         _promises.Install(SetGlobal);
+    }
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, JsSymbol> SymbolRegistry = new(StringComparer.Ordinal);
+
+    private void InstallSymbol()
+    {
+        var symbol = new JsFunction(args => JsValue.From(new JsSymbol(args.Length == 0 || args[0].Type == JsType.Undefined
+            ? null : AbstractOperations.ToPrimitive(args[0], preferString: true).ToJsString())));
+        AddMethod("for", args =>
+        {
+            var key = AbstractOperations.ToPrimitive(args.Length > 0 ? args[0] : JsValue.Undefined, preferString: true).ToJsString();
+            return JsValue.From(SymbolRegistry.GetOrAdd(key, static name => new JsSymbol(name) { RegistryKey = name }));
+        });
+        AddMethod("keyFor", args =>
+        {
+            if (args.Length == 0 || args[0].Data is not JsSymbol input)
+                throw JsException.TypeError("Symbol.keyFor requires a symbol");
+            return input.RegistryKey is { } key ? JsValue.From(key) : JsValue.Undefined;
+        });
+        SetGlobal("Symbol", JsValue.From(symbol));
+
+        void AddMethod(string name, Func<JsValue[], JsValue> call)
+        {
+            var method = new JsFunction(call, 1);
+            method.DefineOwnProperty("name", PropertyDescriptor.Data(JsValue.From(name), configurable: true));
+            symbol.DefineOwnProperty(name, PropertyDescriptor.Data(JsValue.From(method), writable: true, configurable: true));
+        }
     }
 
     public void DrainJobs()

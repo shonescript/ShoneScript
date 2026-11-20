@@ -6,7 +6,8 @@
     "harness/assert.js": "206e274ca325eb8a652e3911c3fbd090e2480d11ed7579dc17a5d17a2360ed48",
     "harness/sta.js": "1930c54af79455c484799f43e9a28e2b2f15c40d0917c9941ca54e26db243f35",
     "harness/dateConstants.js": "f7cafff2ac96601232c801568bb357eff1a515b849211b230e1b16a41bc786ce",
-    "harness/doneprintHandle.js": "01282de15feb05d865dfc2cdfc68f59d8e760eb7d81a14ade3bc08cbc8520add"
+    "harness/doneprintHandle.js": "01282de15feb05d865dfc2cdfc68f59d8e760eb7d81a14ade3bc08cbc8520add",
+    "harness/compareArray.js": "de72f5b300a44f986ef86073fb651b6c36b0035cc442c3e931a79b0031ad1835"
   },
   "tests": {
     "test/built-ins/JSON/parse/15.12.1.1-0-9.js": "3f698c9045969a4247ea6b2975c00e6be3c52b03181baae1e2de6905d38c0b74",
@@ -60,6 +61,12 @@
     "test/language/statements/const/global-use-before-initialization-in-declaration-statement.js": "833b4091c9fc08da08e5adffe63c10e4271b17fa874592b84682e78fe62db8ed",
     "test/language/statements/return/S12.9_A1_T1.js": "bc84790726a54897193596753ab94a938d2ce31689bdc04e3e976a40eb0203a5",
     "test/language/statements/function/param-duplicated-non-strict.js": "0fd0d248e7ae8517f33f1fb929973e612f86c7179a7a4dc400de16398cbbada2",
-    "test/language/statements/function/param-duplicated-strict-1.js": "3a4a4b5e3d70da582993165ab4592c7616abb528c864e022f4fd82ac26ee56aa"
+    "test/language/statements/function/param-duplicated-strict-1.js": "3a4a4b5e3d70da582993165ab4592c7616abb528c864e022f4fd82ac26ee56aa",
+    "test/built-ins/Array/prototype/findLast/return-found-value-predicate-result-is-true.js": "9f42d855c9e6972550ea560564ec77676a83b0929e9c8080640497d9103a8d35",
+    "test/built-ins/Array/prototype/findLastIndex/return-negative-one-if-predicate-returns-false-value.js": "916de4971dbd48c3bddde750d5e7cca800aa386d645d34ae7a0ea9e0c01a541c",
+    "test/built-ins/Array/prototype/toReversed/immutable.js": "7382d18ca336e1eb3067a1c831c79dfec6c5fced955afa615367171de1476646",
+    "test/built-ins/Array/prototype/toSorted/immutable.js": "2179e7151614d096fc58349840cd3bdac71a2902d8a9a880e2e4a98db1a8a2e6",
+    "test/built-ins/Array/prototype/toSpliced/unmodified.js": "18f10804419726bc00d3b74026c0c87d66f0f3eae0a2549dcc894ffce5e2970a",
+    "test/built-ins/Array/prototype/with/immutable.js": "e09c99daeb69efed49dae45afd26f1a736a7792d4a2fed5e5c1f9b39eb57dc96"
   }
 }

@@ -132,7 +132,30 @@ public sealed partial class Interpreter
     private JsValue Assign(Expr target, Expr expression, TokenKind? op = null)
     {
         var reference = Resolve(target);
-        var value = op is null ? Eval(expression) : ApplyBinary(op.Value, reference.Read(), Eval(expression));
+        JsValue value;
+        if (op is null) value = Eval(expression);
+        else
+        {
+            var current = reference.Read();
+            switch (op.Value)
+            {
+                case TokenKind.AndAnd:
+                    if (!current.ToBoolean()) return current;
+                    value = Eval(expression);
+                    break;
+                case TokenKind.OrOr:
+                    if (current.ToBoolean()) return current;
+                    value = Eval(expression);
+                    break;
+                case TokenKind.NullishCoalescing:
+                    if (!AbstractOperations.IsNullish(current)) return current;
+                    value = Eval(expression);
+                    break;
+                default:
+                    value = ApplyBinary(op.Value, current, Eval(expression));
+                    break;
+            }
+        }
         reference.Write(value);
         return value;
     }

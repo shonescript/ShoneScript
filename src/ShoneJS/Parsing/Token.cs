@@ -12,7 +12,7 @@ public enum TokenKind
     Break, Continue, PlusEqual, MinusEqual, StarEqual, SlashEqual, PercentEqual, BigInt,
     OptionalChain, NullishCoalescing, NullishAssign, BitwiseAnd, BitwiseOr, BitwiseXor,
     BitwiseAndEqual, BitwiseOrEqual, BitwiseXorEqual, ShiftLeft, ShiftRight, ShiftUnsignedRight,
-    ShiftLeftEqual, ShiftRightEqual, ShiftUnsignedRightEqual, Power, PowerEqual, Do
+    ShiftLeftEqual, ShiftRightEqual, ShiftUnsignedRightEqual, Power, PowerEqual, Do, AndAndEqual, OrOrEqual
 }
 
 public readonly record struct SourcePosition(int Offset, int Line, int Column);

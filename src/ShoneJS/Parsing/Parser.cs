@@ -758,7 +758,8 @@ public sealed class Parser(IReadOnlyList<Token> tokens, ParseGoal goal = ParseGo
         TokenKind.Comma => 0,
         TokenKind.Equal or TokenKind.PlusEqual or TokenKind.MinusEqual or TokenKind.StarEqual or TokenKind.SlashEqual or TokenKind.PercentEqual or
             TokenKind.BitwiseAndEqual or TokenKind.BitwiseOrEqual or TokenKind.BitwiseXorEqual or
-            TokenKind.ShiftLeftEqual or TokenKind.ShiftRightEqual or TokenKind.ShiftUnsignedRightEqual or TokenKind.PowerEqual => 1,
+            TokenKind.ShiftLeftEqual or TokenKind.ShiftRightEqual or TokenKind.ShiftUnsignedRightEqual or TokenKind.PowerEqual or
+            TokenKind.AndAndEqual or TokenKind.OrOrEqual or TokenKind.NullishAssign => 1,
         TokenKind.OrOr or TokenKind.NullishCoalescing => 3,
         TokenKind.AndAnd => 4,
         TokenKind.BitwiseOr => 5,
@@ -792,6 +793,9 @@ public sealed class Parser(IReadOnlyList<Token> tokens, ParseGoal goal = ParseGo
         TokenKind.ShiftRightEqual => TokenKind.ShiftRight,
         TokenKind.ShiftUnsignedRightEqual => TokenKind.ShiftUnsignedRight,
         TokenKind.PowerEqual => TokenKind.Power,
+        TokenKind.AndAndEqual => TokenKind.AndAnd,
+        TokenKind.OrOrEqual => TokenKind.OrOr,
+        TokenKind.NullishAssign => TokenKind.NullishCoalescing,
         _ => throw new ArgumentOutOfRangeException(nameof(kind))
     };
 

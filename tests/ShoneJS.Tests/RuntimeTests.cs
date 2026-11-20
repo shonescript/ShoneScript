@@ -28,6 +28,8 @@ public class RuntimeTests
     [InlineData("2n ** -1n", "RangeError")]
     [InlineData("BigInt.asIntN(-1, 1n)", "RangeError")]
     [InlineData("BigInt.asUintN(0, 1)", "TypeError")]
+    [InlineData("BigInt('0x_ff')", "SyntaxError")]
+    [InlineData("BigInt('-0x1')", "SyntaxError")]
     public void ReportsJavaScriptError(string source, string errorName)
     {
         var engine = new Engine();
@@ -64,6 +66,14 @@ public class RuntimeTests
     [InlineData("BigInt.asUintN(8, -1n)", "255")]
     [InlineData("BigInt.asIntN(9007199254740991, -1n)", "-1")]
     [InlineData("BigInt({valueOf(){return '0x10';}})", "16")]
+    [InlineData("BigInt('010') + BigInt('0o10')", "18")]
+    [InlineData("Number(9007199254740993n)", "9007199254740992")]
+    [InlineData("Number(9007199254740995n)", "9007199254740996")]
+    [InlineData("(-9n / 4n) * 10n + (-9n % 4n)", "-21")]
+    [InlineData("BigInt.asIntN(8, -128n) + (-128n >> 2n)", "-160")]
+    [InlineData("const a = 0; a &&= missing; const b = 1; b ||= missing; const c = false; c ??= missing; a + b", "1")]
+    [InlineData("let i = 0; let a = [null]; a[i++] ??= 7; a[0] + i", "8")]
+    [InlineData("let a = 0, b = true; a ||= b &&= 4; a + b", "8")]
     [InlineData("({valueOf(){return 2;}}) + 3", "5")]
     [InlineData("let o = {valueOf(){return this;}, toString(){return '4';}}; o == 4", "true")]
     [InlineData("let o = {}; let key = {valueOf(){return 'wrong';}, toString(){return 'right';}}; o[key] = 7; o.right", "7")]

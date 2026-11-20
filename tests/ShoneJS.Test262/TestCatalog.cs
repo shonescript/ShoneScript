@@ -90,7 +90,7 @@ internal sealed class TestCatalog
         if (isAsync && negative is not null)
             throw new NotSupportedException("Async negative Test262 cases are unsupported.");
         foreach (string feature in features)
-            if (feature is not ("hashbang" or "optional-chaining" or "coalesce-expression" or "BigInt" or "Promise.allSettled" or "Symbol.iterator"))
+            if (feature is not ("hashbang" or "optional-chaining" or "coalesce-expression" or "BigInt" or "Promise.allSettled" or "Symbol.iterator" or "Symbol" or "array-find-from-last" or "change-array-by-copy"))
                 throw new NotSupportedException($"Unsupported Test262 feature '{feature}'.");
         foreach (string include in includes)
             if (!include.EndsWith(".js", StringComparison.Ordinal) || include is "assert.js" or "sta.js" or "doneprintHandle.js" || !_manifest.Harness.ContainsKey("harness/" + include))
