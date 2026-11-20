@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Shone
+// SPDX-License-Identifier: MIT
+
 using Sdcb.Arithmetic;
 using System.Text;
 using ShoneJS.Parsing;

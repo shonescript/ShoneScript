@@ -1,16 +1,16 @@
+// Copyright (c) 2026 Shone
+// SPDX-License-Identifier: MIT
+
 using ShoneJS.Parsing;
 using ShoneJS.Runtime;
-using ShoneJS.TypeScript;
 
 namespace ShoneJS;
 
-/// <summary>Configures execution limits and TypeScript checking for an engine.</summary>
+/// <summary>Configures execution limits for an engine.</summary>
 public sealed class EngineOptions
 {
     /// <summary>Sets the iteration budget used by script execution and Promise job draining.</summary>
     public int MaximumLoopIterations { get; set; } = 1_000_000;
-    /// <summary>Configures the external checker used by the TypeScript entry points.</summary>
-    public TypeScriptOptions TypeScript { get; set; } = new();
 }
 
 /// <summary>A parsed JavaScript script that can be passed to <see cref="Engine.Execute"/>.</summary>
@@ -27,7 +27,7 @@ public sealed class ParsedScript
     public bool IsStrict { get; }
 }
 
-/// <summary>A parsed TypeScript script whose original source passed static checking.</summary>
+/// <summary>A parsed TypeScript script ready for direct execution.</summary>
 public sealed class CheckedTypeScript
 {
     internal CheckedTypeScript(ParsedScript script) => Script = script;
@@ -68,27 +68,24 @@ public sealed class Engine
     /// <summary>Parses and executes JavaScript in the current global environment.</summary>
     public JsValue Evaluate(string source) => Execute(ParseScript(source));
 
-    /// <summary>Parses and checks the original TypeScript source without executing it or emitting JavaScript.</summary>
+    /// <summary>Parses supported TypeScript syntax without executing it.</summary>
     /// <exception cref="JsSyntaxException">The source could not be parsed by ShoneJS.</exception>
-    /// <exception cref="TypeScriptCheckException">Type checking failed or the checker was unavailable.</exception>
     public CheckedTypeScript ParseTypeScript(string source)
     {
         ArgumentNullException.ThrowIfNull(source);
         var parser = new Parser(new Lexer(source).Scan(), typeScript: true);
         var statements = parser.ParseTypeScript();
-        var check = new TypeScriptChecker().Check(source, Options.TypeScript);
-        if (!check.Succeeded) throw new TypeScriptCheckException(check.Diagnostics);
         return new CheckedTypeScript(new ParsedScript(statements, parser.IsStrict));
     }
 
-    /// <summary>Interprets a previously checked TypeScript script directly.</summary>
+    /// <summary>Interprets a previously parsed TypeScript script directly.</summary>
     public JsValue ExecuteTypeScript(CheckedTypeScript script)
     {
         ArgumentNullException.ThrowIfNull(script);
         return Execute(script.Script);
     }
 
-    /// <summary>Parses and checks a TypeScript script before executing it.</summary>
+    /// <summary>Parses and executes supported TypeScript syntax directly in the current global environment.</summary>
     public JsValue EvaluateTypeScript(string source) => ExecuteTypeScript(ParseTypeScript(source));
 
     /// <summary>Runs the pending Promise jobs. Hosts call this at a job checkpoint.</summary>

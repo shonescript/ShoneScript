@@ -1,9 +1,11 @@
+// Copyright (c) 2026 Shone
+// SPDX-License-Identifier: MIT
+
 using ShoneJS;
 using ShoneJS.Parsing;
 using ShoneJS.Runtime;
-using ShoneJS.TypeScript;
 
-const string usage = "Usage: ShoneJS.Cli [--ts] [-e <script>]\nPipe a complete script to stdin or use the JavaScript prompt with no arguments.\nTypeScript mode requires SHONEJS_TSGO to point to the native checker.";
+const string usage = "Usage: ShoneJS.Cli [--ts] [-e <script>]\nPipe a complete script to stdin or use the JavaScript prompt with no arguments.";
 
 // --ts is a leading mode switch; remaining arguments select expression, redirected input, or the prompt.
 var typeScript = args.Length > 0 && args[0] == "--ts";
@@ -15,10 +17,7 @@ if (args is ["-h" or "--help"])
     return 0;
 }
 
-var engine = new Engine(new EngineOptions
-{
-    TypeScript = new TypeScriptOptions { ToolPath = Environment.GetEnvironmentVariable("SHONEJS_TSGO") }
-});
+var engine = new Engine();
 
 if (args is ["-e", var source])
     return Evaluate(engine, source, typeScript);
@@ -58,11 +57,6 @@ static int Evaluate(Engine engine, string source, bool typeScript = false)
         engine.DrainJobs();
         Console.WriteLine(result.ToString());
         return 0;
-    }
-    catch (TypeScriptCheckException error)
-    {
-        foreach (var diagnostic in error.Diagnostics)
-            Console.Error.WriteLine(diagnostic);
     }
     catch (JsSyntaxException error)
     {

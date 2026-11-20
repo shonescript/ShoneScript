@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Shone
+// SPDX-License-Identifier: MIT
+
 namespace ShoneJS.Runtime;
 
 /// <summary>A partial property descriptor; null fields mean "not supplied".</summary>

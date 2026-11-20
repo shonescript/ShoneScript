@@ -1,10 +1,10 @@
 # ShoneJS
 
-ShoneJS 是一个用 C# 编写的 JavaScript 和 TypeScript 解释器，面向 .NET 11。可通过命令行运行脚本，也可以嵌入 .NET 应用。其中 TypeScript 模式直接解析和执行支持范围内的 `.ts` 源码，并在执行前完成静态类型检查。
+ShoneJS 是一个用 C# 编写的 JavaScript 和 TypeScript 解释器，面向 .NET 11。可通过命令行运行脚本，也可以嵌入 .NET 应用。其中 TypeScript 模式直接解析和执行支持范围内的 `.ts` 源码，不运行静态类型检查。
 
 ## 快速开始
 
-在仓库根目录使用 [.NET 11 SDK](https://dotnet.microsoft.com/download/dotnet/11.0) 运行以下命令。JavaScript 模式只需要 .NET SDK。
+在仓库根目录使用 [.NET 11 SDK](https://dotnet.microsoft.com/download/dotnet/11.0) 运行以下命令。JavaScript 和 TypeScript 模式均可通过 .NET SDK 构建和运行。
 
 ```bash
 dotnet run --project src/ShoneJS.Cli -- -e "const n = 6; n * 7"
@@ -22,19 +22,13 @@ dotnet run --project src/ShoneJS.Cli < script.js
 
 ## 运行 TypeScript
 
-TypeScript 模式需要官方 TypeScript **7.0.2** 原生检查器。可使用 npm 安装 `typescript@7.0.2`，并将 `SHONEJS_TSGO` 指向对应平台包中的原生 `tsc` 或 `tsc.exe`。以下示例适用于 Windows x64 和 PowerShell。
+TypeScript 模式内置于 ShoneJS，无需安装 Node.js 或外部检查器。解释器直接执行从 TypeScript 源码构建的 AST，无需生成 JavaScript。
 
 ```powershell
-$checkerDir = Join-Path ([System.IO.Path]::GetTempPath()) 'shonejs-ts-checker'
-npm install --prefix $checkerDir typescript@7.0.2
-$env:SHONEJS_TSGO = Join-Path $checkerDir 'node_modules/@typescript/typescript-win32-x64/lib/tsc.exe'
-& $env:SHONEJS_TSGO --version
 dotnet run --project src/ShoneJS.Cli -- --ts -e 'const twice = (n: number): number => n * 2; twice(21)'
 ```
 
-输出 `42`。在 Bash 中配置同一环境变量后，还可以运行 `dotnet run --project src/ShoneJS.Cli -- --ts < script.ts`。TypeScript 模式以整段输入为单位检查和执行。
-
-ShoneJS 将原文解析为带源码位置的 AST，并用官方检查器执行 `--strict --noEmit --target es2023` 检查。检查通过后，C# 解释器直接执行 AST。有类型错误、检查器缺失或版本不匹配时，整段脚本停止在执行前。比如 `let n: number = 'x';` 会报告 `TS2322`，并附上行列位置。
+输出 `42`。在 Bash 中，还可以运行 `dotnet run --project src/ShoneJS.Cli -- --ts < script.ts`。TypeScript 模式以整段输入为单位解析和执行。语法错误会阻止执行，类型注解与值不匹配时仍按运行时语义执行。
 
 ## 嵌入 .NET 应用
 
@@ -52,7 +46,7 @@ Console.WriteLine(engine.Execute(script)); // 42
 
 一次性求值可用 `Engine.Evaluate`。宿主可在作业检查点调用 `Engine.DrainJobs()` 执行待处理的 Promise 作业，CLI 会在每次成功求值后调用它。需要独立的全局环境时，创建单独的 `Engine` 实例。
 
-TypeScript 宿主通过 `EngineOptions.TypeScript.ToolPath` 配置检查器，并使用 `Engine.EvaluateTypeScript`，或分别调用 `ParseTypeScript` 和 `ExecuteTypeScript`。检查失败会抛出 `TypeScriptCheckException`，其 `Diagnostics` 提供结构化诊断。
+TypeScript 宿主可使用 `Engine.EvaluateTypeScript`，或分别调用 `ParseTypeScript` 和 `ExecuteTypeScript`。这些入口直接解析并执行支持的 TypeScript 语法，不运行静态类型检查。
 
 ## 兼容范围
 
@@ -72,7 +66,7 @@ dotnet test ShoneJS.sln -c Release
 dotnet run --project tests/ShoneJS.Test262 -c Release
 ```
 
-使用官方检查器的集成用例需要在运行 `dotnet test` 前设置 `SHONEJS_TSGO`。Test262 runner 验证随仓库提交的上游测试和 harness 的 SHA-256，并在独立进程中运行每个变体。当前 smoke 清单包含 111 个变体。
+Test262 runner 验证随仓库提交的上游测试和 harness 的 SHA-256，并在独立进程中运行每个变体。当前 smoke 清单包含 111 个变体。
 
 ```bash
 dotnet run --project tests/ShoneJS.Test262 -c Release -- --list
@@ -84,11 +78,13 @@ dotnet run --project tests/ShoneJS.Test262 -c Release -- \
 
 | 路径 | 用途 |
 | --- | --- |
-| [`src/ShoneJS`](src/ShoneJS) | 公共宿主 API、Lexer、Parser、AST、解释器、内建对象和 TypeScript 检查器适配。 |
+| [`src/ShoneJS`](src/ShoneJS) | 公共宿主 API、Lexer、Parser、AST、解释器和内建对象。 |
 | [`src/ShoneJS.Cli`](src/ShoneJS.Cli) | JavaScript 交互模式，以及 JavaScript 和 TypeScript 的单次执行入口。 |
 | [`tests/ShoneJS.Tests`](tests/ShoneJS.Tests) | xUnit 语法、运行时和宿主集成测试。 |
 | [`tests/ShoneJS.Test262`](tests/ShoneJS.Test262) | 固定版本的 Test262 smoke 清单、上游语料及 runner。 |
 
 ## 许可
 
-项目根目录尚未添加许可证。仓库中随附的 Test262 文件适用上游许可。见 [Test262 LICENSE](tests/ShoneJS.Test262/upstream/LICENSE)。
+ShoneJS 由 Shone 编写，采用 MIT 许可证。见 [LICENSE](LICENSE)。
+
+随仓库分发的 Test262 文件遵循其上游许可。见 [Test262 LICENSE](tests/ShoneJS.Test262/upstream/LICENSE)。
