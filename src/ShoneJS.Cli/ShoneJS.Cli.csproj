@@ -10,5 +10,6 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../ShoneJS/ShoneJS.csproj" />
+    <ProjectReference Include="../ShonePy/ShonePy.csproj" />
   </ItemGroup>
 </Project>

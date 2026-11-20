@@ -4,17 +4,26 @@
 using ShoneJS;
 using ShoneJS.Parsing;
 using ShoneJS.Runtime;
+using ShonePy;
 
-const string usage = "Usage: ShoneJS.Cli [--ts] [-e <script>]\nPipe a complete script to stdin or use the JavaScript prompt with no arguments.";
+const string usage = "Usage: ShoneJS.Cli [--ts | --py] [-e <script>]\nPipe a complete script to stdin or use the JavaScript prompt with no arguments.";
 
-// --ts is a leading mode switch; remaining arguments select expression, redirected input, or the prompt.
-var typeScript = args.Length > 0 && args[0] == "--ts";
-if (typeScript) args = args[1..];
+var typeScript = args is ["--ts", ..];
+var python = args is ["--py", ..];
+if (typeScript || python) args = args[1..];
 
 if (args is ["-h" or "--help"])
 {
     Console.WriteLine(usage);
     return 0;
+}
+
+if (python)
+{
+    if (args is ["-e", var pythonSource]) return EvaluatePython(pythonSource, "<command>");
+    if (args.Length == 0 && Console.IsInputRedirected) return EvaluatePython(Console.In.ReadToEnd(), "<stdin>");
+    Console.Error.WriteLine(usage);
+    return 2;
 }
 
 var engine = new Engine();
@@ -46,6 +55,23 @@ while (true)
         return 0;
     if (!string.IsNullOrWhiteSpace(line))
         Evaluate(engine, line);
+}
+
+static int EvaluatePython(string source, string fileName)
+{
+    try
+    {
+        var engine = new PythonEngine(new PythonOptions { Output = Console.Out });
+        var result = engine.Evaluate(source, fileName);
+        if (result.Type != PyType.None) Console.WriteLine(result);
+        return 0;
+    }
+    catch (PythonException error)
+    {
+        var location = error.Line > 0 ? $"{error.FileName ?? fileName}:{error.Line}:{error.Column}: " : "";
+        Console.Error.WriteLine($"{location}{error.ErrorName}: {error.Message}");
+        return 1;
+    }
 }
 
 // Keep script evaluation and job draining together so promise jobs finish before the result is printed.
