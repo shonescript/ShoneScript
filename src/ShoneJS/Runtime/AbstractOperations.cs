@@ -1,5 +1,5 @@
 using System.Globalization;
-using System.Numerics;
+using Sdcb.Arithmetic;
 
 namespace ShoneJS.Runtime;
 
@@ -29,8 +29,8 @@ public static class AbstractOperations
         if (right.Type == JsType.Boolean) return LooseEqual(left, JsValue.From(right.ToNumber()));
         if (left.Type == JsType.Number && right.Type == JsType.String || left.Type == JsType.String && right.Type == JsType.Number)
             return left.ToNumber() == right.ToNumber();
-        if (left.Type == JsType.BigInt && right.Type is JsType.String or JsType.Number) return BigIntEquals((BigInteger)left.Data!, right);
-        if (right.Type == JsType.BigInt && left.Type is JsType.String or JsType.Number) return BigIntEquals((BigInteger)right.Data!, left);
+        if (left.Type == JsType.BigInt && right.Type is JsType.String or JsType.Number) return BigIntEquals((BigInt)left.Data!, right);
+        if (right.Type == JsType.BigInt && left.Type is JsType.String or JsType.Number) return BigIntEquals((BigInt)right.Data!, left);
         if (left.Data is JsObject && right.Data is not JsObject) return LooseEqual(ToPrimitive(left), right);
         if (right.Data is JsObject && left.Data is not JsObject) return LooseEqual(left, ToPrimitive(right));
         return false;
@@ -49,19 +49,19 @@ public static class AbstractOperations
         throw JsException.TypeError("Cannot convert object to primitive value");
     }
 
-    private static bool BigIntEquals(BigInteger integer, JsValue other)
+    private static bool BigIntEquals(BigInt integer, JsValue other)
     {
         if (other.Type == JsType.String) return TryParseBigInt((string)other.Data!, out var parsed) && parsed == integer;
         var number = other.ToNumber();
-        return double.IsFinite(number) && Math.Truncate(number) == number && new BigInteger(number) == integer;
+        return double.IsFinite(number) && Math.Truncate(number) == number && new BigInt(number) == integer;
     }
 
     public static bool IsNullish(JsValue value) => value.Type is JsType.Null or JsType.Undefined;
 
-    internal static bool TryParseBigInt(string text, out BigInteger value)
+    internal static bool TryParseBigInt(string text, out BigInt value)
     {
         text = TrimNumericString(text);
-        value = BigInteger.Zero;
+        value = BigInt.Zero;
         if (text.Length == 0) return true;
         if (text.Length >= 2 && text[0] == '0')
         {
@@ -82,7 +82,7 @@ public static class AbstractOperations
         if (digits.IsEmpty) return false;
         foreach (var ch in digits)
             if (ch is < '0' or > '9') return false;
-        return BigInteger.TryParse(text, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out value);
+        return BigInt.TryParse(text, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out value);
     }
 
     internal static double StringToNumber(string text)

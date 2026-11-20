@@ -1,5 +1,5 @@
 using System.Globalization;
-using System.Numerics;
+using Sdcb.Arithmetic;
 
 namespace ShoneJS.Runtime;
 
@@ -37,7 +37,7 @@ public readonly struct JsValue
     public static JsValue From(string value) => new(JsType.String, value ?? throw new ArgumentNullException(nameof(value)));
     public static JsValue From(JsObject value) => new(value is JsFunction ? JsType.Function : JsType.Object, value ?? throw new ArgumentNullException(nameof(value)));
     public static JsValue From(JsFunction value) => From((JsObject)value);
-    public static JsValue From(BigInteger value) => new(JsType.BigInt, value);
+    public static JsValue From(BigInt value) => new(JsType.BigInt, value);
     public static JsValue From(JsSymbol value) => new(JsType.Symbol, value ?? throw new ArgumentNullException(nameof(value)));
 
     public bool ToBoolean() => Type switch
@@ -46,7 +46,7 @@ public readonly struct JsValue
         JsType.Boolean => _number != 0,
         JsType.Number => _number != 0 && !double.IsNaN(_number),
         JsType.String => ((string)_reference!).Length != 0,
-        JsType.BigInt => !((BigInteger)_reference!).IsZero,
+        JsType.BigInt => !((BigInt)_reference!).IsZero,
         _ => true
     };
 
@@ -66,7 +66,7 @@ public readonly struct JsValue
         JsType.Boolean => _number != 0 ? "true" : "false",
         JsType.Number => AbstractOperations.NumberToString(_number),
         JsType.String => (string)_reference!,
-        JsType.BigInt => ((BigInteger)_reference!).ToString(CultureInfo.InvariantCulture),
+        JsType.BigInt => ((BigInt)_reference!).ToString(),
         JsType.Symbol => throw JsException.TypeError("Cannot convert a Symbol to a string"),
         JsType.Function => "function",
         _ => "[object Object]"

@@ -1,4 +1,4 @@
-using System.Numerics;
+using Sdcb.Arithmetic;
 using ShoneJS.Parsing;
 
 namespace ShoneJS.Runtime;
@@ -56,7 +56,7 @@ public sealed partial class Interpreter
         {
             if (args.Length == 0) return JsValue.From(0d);
             var input = AbstractOperations.ToPrimitive(args[0]);
-            return JsValue.From(input.Data is BigInteger integer ? (double)integer : input.ToNumber());
+            return JsValue.From(input.Data is BigInt integer ? (double)integer : input.ToNumber());
         }, 1)));
         SetGlobal("Boolean", JsValue.From(new JsFunction(args => JsValue.From(args.Length > 0 && args[0].ToBoolean()), 1)));
         var bigInt = new JsFunction(args => ToBigInt(args.Length == 0 ? JsValue.Undefined : args[0]), 1);
@@ -99,13 +99,13 @@ public sealed partial class Interpreter
             throw JsException.RangeError("Invalid BigInt bit count");
 
         var converted = ToBigInt(args.Length > 1 ? args[1] : JsValue.Undefined, allowNumber: false);
-        var integer = (BigInteger)converted.Data!;
-        if (bitCount == 0 || integer.IsZero) return JsValue.From(BigInteger.Zero);
+        var integer = (BigInt)converted.Data!;
+        if (bitCount == 0 || integer.IsZero) return JsValue.From(BigInt.Zero);
         if (integer.GetBitLength() < bitCount && (signed || integer.Sign >= 0)) return converted;
         if (bitCount > MaximumBigIntResultBits) throw JsException.RangeError("BigInt result is too large");
 
-        var modulus = BigInteger.One << (int)bitCount;
-        var remainder = integer & (modulus - BigInteger.One);
+        var modulus = BigInt.One << (int)bitCount;
+        var remainder = integer & (modulus - BigInt.One);
         if (signed && remainder >= (modulus >> 1)) remainder -= modulus;
         return JsValue.From(remainder);
     }
@@ -114,12 +114,12 @@ public sealed partial class Interpreter
     {
         value = AbstractOperations.ToPrimitive(value);
         if (value.Type == JsType.BigInt) return value;
-        if (value.Type == JsType.Boolean) return JsValue.From(new BigInteger(value.ToNumber()));
+        if (value.Type == JsType.Boolean) return JsValue.From(new BigInt(value.ToNumber()));
         if (allowNumber && value.Type == JsType.Number)
         {
             var number = value.ToNumber();
             if (!double.IsFinite(number) || number != Math.Truncate(number)) throw JsException.RangeError("Number is not an integer");
-            return JsValue.From(new BigInteger(number));
+            return JsValue.From(new BigInt(number));
         }
         if (value.Type == JsType.String)
         {

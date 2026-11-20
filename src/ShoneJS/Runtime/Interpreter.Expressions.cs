@@ -1,4 +1,4 @@
-using System.Numerics;
+using Sdcb.Arithmetic;
 using System.Text;
 using ShoneJS.Parsing;
 
@@ -143,7 +143,7 @@ public sealed partial class Interpreter
         var value = AbstractOperations.ToPrimitive(reference.Read());
         if (value.Type != JsType.BigInt) value = JsValue.From(value.ToNumber());
         var increment = update.Op == TokenKind.PlusPlus ? 1 : -1;
-        var result = value.Data is BigInteger integer ? JsValue.From(integer + increment) : JsValue.From(value.ToNumber() + increment);
+        var result = value.Data is BigInt integer ? JsValue.From(integer + increment) : JsValue.From(value.ToNumber() + increment);
         reference.Write(result);
         return update.Prefix ? result : value;
     }
@@ -166,10 +166,10 @@ public sealed partial class Interpreter
         return unary.Op switch
         {
             TokenKind.Bang => JsValue.From(!value.ToBoolean()),
-            TokenKind.Minus when value.Data is BigInteger integer => JsValue.From(-integer),
+            TokenKind.Minus when value.Data is BigInt integer => JsValue.From(-integer),
             TokenKind.Minus => JsValue.From(-value.ToNumber()),
             TokenKind.Plus => JsValue.From(value.ToNumber()),
-            TokenKind.Tilde when value.Data is BigInteger integer => JsValue.From(~integer),
+            TokenKind.Tilde when value.Data is BigInt integer => JsValue.From(~integer),
             TokenKind.Tilde => JsValue.From((double)~ToInt32(value.ToNumber())),
             TokenKind.Void => JsValue.Undefined,
             TokenKind.Typeof => JsValue.From(value.Type switch { JsType.Null => "object", JsType.BigInt => "bigint", _ => value.Type.ToString().ToLowerInvariant() }),
@@ -217,7 +217,7 @@ public sealed partial class Interpreter
             return JsValue.From(left.ToJsString() + right.ToJsString());
         if (left.Type == JsType.BigInt || right.Type == JsType.BigInt)
         {
-            if (left.Data is not BigInteger a || right.Data is not BigInteger b) throw JsException.TypeError("Cannot mix BigInt and other numeric types");
+            if (left.Data is not BigInt a || right.Data is not BigInt b) throw JsException.TypeError("Cannot mix BigInt and other numeric types");
             if (b.IsZero && op is TokenKind.Slash or TokenKind.Percent) throw JsException.RangeError("Division by zero");
             return JsValue.From(op switch
             {
@@ -252,23 +252,23 @@ public sealed partial class Interpreter
 
     private const int MaximumBigIntResultBits = 16 * 1024 * 1024;
 
-    private static BigInteger ShiftBigInt(BigInteger value, BigInteger shift)
+    private static BigInt ShiftBigInt(BigInt value, BigInt shift)
     {
-        if (value.IsZero) return BigInteger.Zero;
-        if (shift <= -value.GetBitLength()) return value.Sign < 0 ? BigInteger.MinusOne : BigInteger.Zero;
+        if (value.IsZero) return BigInt.Zero;
+        if (shift <= -value.GetBitLength()) return value.Sign < 0 ? BigInt.MinusOne : BigInt.Zero;
         if (shift > MaximumBigIntResultBits - value.GetBitLength()) throw JsException.RangeError("BigInt result is too large");
         return shift.Sign < 0 ? value >> (int)-shift : value << (int)shift;
     }
 
-    private static BigInteger PowerBigInt(BigInteger value, BigInteger exponent)
+    private static BigInt PowerBigInt(BigInt value, BigInt exponent)
     {
         if (exponent.Sign < 0) throw JsException.RangeError("BigInt exponent must be nonnegative");
-        if (exponent.IsZero) return BigInteger.One;
+        if (exponent.IsZero) return BigInt.One;
         if (value.IsZero || value.IsOne) return value;
-        if (value == BigInteger.MinusOne) return exponent.IsEven ? BigInteger.One : BigInteger.MinusOne;
-        if (exponent * BigInteger.Abs(value).GetBitLength() > MaximumBigIntResultBits)
+        if (value == BigInt.MinusOne) return exponent.IsEven ? BigInt.One : BigInt.MinusOne;
+        if (exponent * BigInt.Abs(value).GetBitLength() > MaximumBigIntResultBits)
             throw JsException.RangeError("BigInt result is too large");
-        return BigInteger.Pow(value, (int)exponent);
+        return BigInt.Pow(value, (uint)exponent);
     }
 
     private static int? Compare(JsValue left, JsValue right)
@@ -276,9 +276,9 @@ public sealed partial class Interpreter
         left = AbstractOperations.ToPrimitive(left);
         right = AbstractOperations.ToPrimitive(right);
         if (left.Data is string a && right.Data is string b) return string.CompareOrdinal(a, b);
-        if (left.Data is BigInteger x)
+        if (left.Data is BigInt x)
         {
-            if (right.Data is BigInteger y) return x.CompareTo(y);
+            if (right.Data is BigInt y) return x.CompareTo(y);
             if (right.Data is string text) return AbstractOperations.TryParseBigInt(text, out var parsed) ? x.CompareTo(parsed) : null;
             return CompareIntegerAndNumber(x, right.ToNumber());
         }
@@ -288,13 +288,13 @@ public sealed partial class Interpreter
         return double.IsNaN(first) || double.IsNaN(second) ? null : first.CompareTo(second);
     }
 
-    private static int? CompareIntegerAndNumber(BigInteger integer, double number)
+    private static int? CompareIntegerAndNumber(BigInt integer, double number)
     {
         if (double.IsNaN(number)) return null;
         if (double.IsPositiveInfinity(number)) return -1;
         if (double.IsNegativeInfinity(number)) return 1;
         var truncated = Math.Truncate(number);
-        var order = integer.CompareTo(new BigInteger(truncated));
+        var order = integer.CompareTo(new BigInt(truncated));
         return order != 0 ? order : truncated.CompareTo(number);
     }
 

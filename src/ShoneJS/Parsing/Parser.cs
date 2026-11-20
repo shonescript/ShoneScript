@@ -1,5 +1,5 @@
 using System.Globalization;
-using System.Numerics;
+using Sdcb.Arithmetic;
 
 namespace ShoneJS.Parsing;
 
@@ -640,7 +640,7 @@ public sealed class Parser(IReadOnlyList<Token> tokens, ParseGoal goal = ParseGo
         throw Error("Invalid numeric literal", token);
     }
 
-    private static BigInteger Integer(string text, bool legacyOctal = false)
+    private static BigInt Integer(string text, bool legacyOctal = false)
     {
         var radix = legacyOctal ? 8 : 10;
         var start = 0;
@@ -649,7 +649,7 @@ public sealed class Parser(IReadOnlyList<Token> tokens, ParseGoal goal = ParseGo
             radix = char.ToLowerInvariant(text[1]) switch { 'x' => 16, 'o' => 8, 'b' => 2, _ => radix };
             if (!legacyOctal && radix != 10) start = 2;
         }
-        BigInteger result = 0;
+        BigInt result = 0;
         foreach (var digit in text.AsSpan(start))
         {
             if (digit == '_') continue;

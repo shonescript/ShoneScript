@@ -1,4 +1,4 @@
-using System.Numerics;
+using Sdcb.Arithmetic;
 
 namespace ShoneJS.Parsing;
 
@@ -38,7 +38,7 @@ public abstract record Expr
 }
 
 public sealed record LiteralExpr(object? Value) : Expr;
-public sealed record BigIntExpr(BigInteger Value) : Expr;
+public sealed record BigIntExpr(BigInt Value) : Expr;
 public sealed record TemplateElement(string Raw, string Cooked, SourceSpan Span);
 public sealed record TemplateExpr(IReadOnlyList<TemplateElement> Quasis, IReadOnlyList<Expr> Expressions) : Expr
 {
