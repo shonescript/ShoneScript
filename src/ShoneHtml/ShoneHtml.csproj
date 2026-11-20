@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../ShoneJS/ShoneJS.csproj" />
+    <PackageReference Include="AngleSharp" Version="1.10.5" />
+    <PackageReference Include="Aprillz.MewUI.Core" Version="0.22.1" />
+    <InternalsVisibleTo Include="ShoneHtml.Tests" />
+  </ItemGroup>
+</Project>

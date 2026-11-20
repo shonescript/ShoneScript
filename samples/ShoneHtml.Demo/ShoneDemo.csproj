@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net11.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Aprillz.MewUI" Version="0.22.1" />
+    <ProjectReference Include="../../src/ShoneHtml/ShoneHtml.csproj" />
+  </ItemGroup>
+</Project>
