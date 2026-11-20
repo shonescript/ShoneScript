@@ -6,6 +6,8 @@
   <PropertyGroup>
     <TargetFramework>net11.0</TargetFramework>
     <Authors>Shone</Authors>
+    <PackageId>ShoneJs</PackageId>
+    <Description>A managed JavaScript and TypeScript interpreter for .NET.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
