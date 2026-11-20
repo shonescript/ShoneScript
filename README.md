@@ -128,6 +128,6 @@ SHONEPY_CPYTHON=/absolute/path/to/python dotnet test tests/ShonePy.Tests -c Rele
 
 ## 许可
 
-ShoneJs 由 Shone 利用 gpt-sol-6.2 编写和修改，采用 MIT 许可证。见 [LICENSE](LICENSE)。
+ShoneJs 和 ShonePy 均利用 gpt-sol-6.2 生成，再手工微调和修改，采用 MIT 许可证。见 [LICENSE](LICENSE)。
 
 随仓库分发的 Test262 文件遵循其上游许可。见 [Test262 LICENSE](tests/ShoneJs.Test262/upstream/LICENSE)。
