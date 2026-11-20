@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 using System.Diagnostics;
-using ShoneScript;
+using ShoneJs;
 
-namespace ShoneScript.Tests;
+namespace ShoneJs.Tests;
 
 public static class InterpreterBenchmark
 {

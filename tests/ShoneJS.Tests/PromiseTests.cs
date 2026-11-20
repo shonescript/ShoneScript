@@ -1,9 +1,9 @@
 // Copyright (c) 2026 Shone
 // SPDX-License-Identifier: MIT
 
-using ShoneScript.Runtime;
+using ShoneJs.Runtime;
 
-namespace ShoneScript.Tests;
+namespace ShoneJs.Tests;
 
 public class PromiseTests
 {

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Shone
 // SPDX-License-Identifier: MIT
 
-namespace ShoneScript.Parsing;
+namespace ShoneJs.Parsing;
 
 public enum TokenKind
 {

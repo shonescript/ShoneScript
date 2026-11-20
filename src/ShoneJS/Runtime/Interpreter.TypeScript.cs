@@ -1,9 +1,9 @@
 // Copyright (c) 2026 Shone
 // SPDX-License-Identifier: MIT
 
-using ShoneScript.Parsing;
+using ShoneJs.Parsing;
 
-namespace ShoneScript.Runtime;
+namespace ShoneJs.Runtime;
 
 public sealed partial class Interpreter
 {

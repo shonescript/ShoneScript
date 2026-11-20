@@ -3,7 +3,7 @@
 
 using System.Globalization;
 
-namespace ShoneScript.Runtime.Builtins;
+namespace ShoneJs.Runtime.Builtins;
 
 public static class ObjectBuiltins
 {

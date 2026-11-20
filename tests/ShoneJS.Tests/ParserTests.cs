@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 using Sdcb.Arithmetic;
-using ShoneScript.Parsing;
+using ShoneJs.Parsing;
 
-namespace ShoneScript.Tests;
+namespace ShoneJs.Tests;
 
 public class ParserTests
 {

@@ -3,9 +3,9 @@
 
 using Sdcb.Arithmetic;
 using System.Text;
-using ShoneScript.Parsing;
+using ShoneJs.Parsing;
 
-namespace ShoneScript.Runtime;
+namespace ShoneJs.Runtime;
 
 public sealed partial class Interpreter
 {

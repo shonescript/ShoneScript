@@ -4,7 +4,7 @@
 using System.Globalization;
 using Sdcb.Arithmetic;
 
-namespace ShoneScript.Runtime.Builtins;
+namespace ShoneJs.Runtime.Builtins;
 
 public static class TypedArrayBuiltins
 {

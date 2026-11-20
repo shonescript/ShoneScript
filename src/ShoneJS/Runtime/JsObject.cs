@@ -4,7 +4,7 @@
 using System.Collections.Generic;
 using System.Globalization;
 
-namespace ShoneScript.Runtime;
+namespace ShoneJs.Runtime;
 
 /// <summary>Ordinary JavaScript object storage and internal property operations.</summary>
 public class JsObject

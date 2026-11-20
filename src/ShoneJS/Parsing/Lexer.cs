@@ -4,7 +4,7 @@
 using System.Globalization;
 using System.Text;
 
-namespace ShoneScript.Parsing;
+namespace ShoneJs.Parsing;
 
 public sealed class Lexer(string source)
 {

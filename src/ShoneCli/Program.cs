@@ -1,9 +1,9 @@
 // Copyright (c) 2026 Shone
 // SPDX-License-Identifier: MIT
 
-using ShoneScript;
-using ShoneScript.Parsing;
-using ShoneScript.Runtime;
+using ShoneJs;
+using ShoneJs.Parsing;
+using ShoneJs.Runtime;
 using ShonePy;
 
 const string usage = "Usage: ShoneScript [--ts | --py] [-e <script>]\nPipe a complete script to stdin or use the JavaScript prompt with no arguments.";

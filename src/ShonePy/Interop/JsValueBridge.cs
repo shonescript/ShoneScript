@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 using Sdcb.Arithmetic;
-using ShoneScript.Runtime;
+using ShoneJs.Runtime;
 
 namespace ShonePy.Interop;
 

@@ -1,10 +1,10 @@
 // Copyright (c) 2026 Shone
 // SPDX-License-Identifier: MIT
 
-using ShoneScript.Parsing;
-using ShoneScript.Runtime;
+using ShoneJs.Parsing;
+using ShoneJs.Runtime;
 
-namespace ShoneScript;
+namespace ShoneJs;
 
 /// <summary>Configures execution limits for an engine.</summary>
 public sealed class EngineOptions

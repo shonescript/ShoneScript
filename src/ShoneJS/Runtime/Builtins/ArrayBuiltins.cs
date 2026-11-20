@@ -4,7 +4,7 @@
 using System.Globalization;
 using System.Text;
 
-namespace ShoneScript.Runtime.Builtins;
+namespace ShoneJs.Runtime.Builtins;
 
 /// <summary>Installs Array and its prototype methods into an interpreter realm.</summary>
 public static class ArrayBuiltins

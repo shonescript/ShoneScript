@@ -1,9 +1,9 @@
 // Copyright (c) 2026 Shone
 // SPDX-License-Identifier: MIT
 
-using ShoneScript.Parsing;
+using ShoneJs.Parsing;
 
-namespace ShoneScript.Tests;
+namespace ShoneJs.Tests;
 
 public class TypeScriptParserTests
 {

@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 using System.Diagnostics;
-using ShoneScript.Parsing;
-using ShoneScript.Runtime;
+using ShoneJs.Parsing;
+using ShoneJs.Runtime;
 
-namespace ShoneScript.Test262;
+namespace ShoneJs.Test262;
 
 internal static class Program
 {

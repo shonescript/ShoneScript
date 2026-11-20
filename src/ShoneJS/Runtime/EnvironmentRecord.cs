@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Shone
 // SPDX-License-Identifier: MIT
 
-namespace ShoneScript.Runtime;
+namespace ShoneJs.Runtime;
 
 /// <summary>A lexical scope whose bindings may remain uninitialized until declaration execution.</summary>
 public sealed class EnvironmentRecord(EnvironmentRecord? parent = null)
