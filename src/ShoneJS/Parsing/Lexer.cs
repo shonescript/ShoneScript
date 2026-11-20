@@ -25,6 +25,7 @@ public sealed class Lexer(string source)
         ["continue"] = TokenKind.Continue, ["do"] = TokenKind.Do
     };
 
+    // Tokenizes once and then reuses the same list; callers may safely invoke Scan repeatedly.
     public IReadOnlyList<Token> Scan()
     {
         if (_tokens.Count != 0 && _tokens[^1].Kind == TokenKind.End) return _tokens;
@@ -56,6 +57,8 @@ public sealed class Lexer(string source)
                 ScanTemplate(start, first: true);
                 continue;
             }
+            // Template substitutions reuse the normal lexer, while this stack tracks nested braces
+            // so a closing brace can resume scanning the template tail instead of ending the token stream.
             if (_templateBraces.Count > 0 && ch is '{' or '}')
             {
                 var braces = _templateBraces.Pop();
@@ -127,6 +130,8 @@ public sealed class Lexer(string source)
         while (_offset < source.Length && !IsLineTerminator(Peek())) Advance();
     }
 
+    // Numeric separators and BigInt suffixes are validated here before the parser converts the value.
+    // Legacy octal is intentionally deferred to Number(), where strict-mode state is available.
     private void ScanNumber(SourcePosition start, char first)
     {
         if (first == '0' && Peek() is 'x' or 'X' or 'o' or 'O' or 'b' or 'B')
@@ -197,6 +202,7 @@ public sealed class Lexer(string source)
         Add(TokenKind.String, start, cooked.ToString(), legacy: legacy);
     }
 
+    // Template tokens carry both cooked text and raw source text; escape validity differs from strings.
     private void ScanTemplate(SourcePosition start, bool first)
     {
         var cooked = new StringBuilder();
@@ -318,6 +324,8 @@ public sealed class Lexer(string source)
         return true;
     }
 
+    // HasLineTerminatorBefore is retained because JavaScript's automatic semicolon insertion
+    // and restricted productions (for example, return and throw) depend on it.
     private void Add(TokenKind kind, SourcePosition start, string? text = null, string? raw = null, bool legacy = false)
     {
         raw ??= source[start.Offset.._offset];

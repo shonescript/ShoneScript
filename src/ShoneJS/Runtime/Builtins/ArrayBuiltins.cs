@@ -3,6 +3,7 @@ using System.Text;
 
 namespace ShoneJS.Runtime.Builtins;
 
+/// <summary>Installs Array and its prototype methods into an interpreter realm.</summary>
 public static class ArrayBuiltins
 {
     private const long MaxSafeLength = 9_007_199_254_740_991;
@@ -94,6 +95,7 @@ public static class ArrayBuiltins
             return result;
         }
 
+        // Result-producing methods share this constructor check until Symbol.species is modeled.
         private JsArray NewResultArray(JsObject source, long length = 0)
         {
             // Symbol.species is unavailable in the current property model. Still perform
@@ -303,6 +305,7 @@ public static class ArrayBuiltins
             var callback = RequireCallback(args);
             var thisArg = Argument(args, 1);
             var receiver = JsValue.From(obj);
+            // Find variants call the predicate for holes as undefined; map/filter and tests skip holes.
             var visitHoles = operation is Iteration.Find or Iteration.FindIndex or Iteration.FindLast or Iteration.FindLastIndex;
             var result = operation switch
             {

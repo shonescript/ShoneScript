@@ -5,6 +5,7 @@ namespace ShoneJS.Runtime.Builtins;
 
 public static class TypedArrayBuiltins
 {
+    /// <summary>Fixed-size byte storage shared by typed-array views.</summary>
     public sealed class BufferObject : JsObject
     {
         internal BufferObject(int size) => Bytes = new byte[size];
@@ -12,6 +13,7 @@ public static class TypedArrayBuiltins
         public int ByteLength => Bytes.Length;
     }
 
+    /// <summary>A fixed-length typed view; subarrays share the underlying buffer.</summary>
     public sealed class ViewObject : JsObject
     {
         internal ViewObject(BufferObject buffer, int length, Kind kind, JsObject? prototype, int byteOffset = 0)
@@ -43,6 +45,7 @@ public static class TypedArrayBuiltins
             if (key is "length" or "byteLength" or "byteOffset" or "buffer") return false;
             return base.DefineOwnProperty(key, descriptor);
         }
+        // Integer element reads are converted to JS Number; BigInt views retain BigInt values.
         internal JsValue Read(int index)
         {
             var offset = ByteOffset + index * BytesPerElement;
@@ -58,6 +61,7 @@ public static class TypedArrayBuiltins
                 _ => throw new InvalidOperationException("Unknown typed array element kind")
             };
         }
+        // Writes apply the element kind's conversion, wrapping integer values or clamping Uint8Clamped.
         internal void Write(int index, JsValue value)
         {
             var offset = ByteOffset + index * BytesPerElement;

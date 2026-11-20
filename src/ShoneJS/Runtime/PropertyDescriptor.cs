@@ -1,5 +1,6 @@
 namespace ShoneJS.Runtime;
 
+/// <summary>A partial property descriptor; null fields mean "not supplied".</summary>
 public sealed record PropertyDescriptor
 {
     // Null means the corresponding field was omitted. JsValue.Undefined is an explicit field value.
@@ -28,6 +29,7 @@ public sealed record PropertyDescriptor
         ValidateAccessor(Set);
     }
 
+    // New properties receive descriptor defaults; updates preserve omitted fields separately in ApplyTo.
     internal PropertyDescriptor Complete() => IsAccessorDescriptor
         ? Accessor(Get, Set, Enumerable ?? false, Configurable ?? false)
         : Data(Value ?? JsValue.Undefined, Writable ?? false, Enumerable ?? false, Configurable ?? false);

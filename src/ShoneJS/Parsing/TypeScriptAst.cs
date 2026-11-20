@@ -1,5 +1,7 @@
 namespace ShoneJS.Parsing;
 
+// Type nodes are preserved in the AST for tooling/analysis; they describe TypeScript syntax
+// and are not runtime JavaScript expressions.
 public abstract record TypeNode
 {
     public SourceSpan Span { get; init; }

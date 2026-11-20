@@ -3,8 +3,10 @@ using Sdcb.Arithmetic;
 
 namespace ShoneJS.Runtime;
 
+/// <summary>Shared ECMAScript-style coercion and comparison operations.</summary>
 public static class AbstractOperations
 {
+    /// <summary>Implements === semantics: NaN is unequal to itself and signed zeroes compare equal.</summary>
     public static bool StrictEqual(JsValue left, JsValue right) => left.Type == right.Type && left.Type switch
     {
         JsType.Undefined or JsType.Null => true,
@@ -13,6 +15,7 @@ public static class AbstractOperations
         _ => Equals(left.Data, right.Data)
     };
 
+    /// <summary>Implements SameValue semantics, distinguishing signed zero while equating NaN values.</summary>
     public static bool SameValue(JsValue left, JsValue right)
     {
         if (left.Type != JsType.Number || right.Type != JsType.Number) return StrictEqual(left, right);
@@ -21,6 +24,7 @@ public static class AbstractOperations
         return double.IsNaN(x) ? double.IsNaN(y) : BitConverter.DoubleToInt64Bits(x) == BitConverter.DoubleToInt64Bits(y);
     }
 
+    /// <summary>Implements the supported abstract-equality coercions, including nullish and BigInt cases.</summary>
     public static bool LooseEqual(JsValue left, JsValue right)
     {
         if (left.Type == right.Type) return StrictEqual(left, right);

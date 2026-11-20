@@ -27,6 +27,7 @@ internal sealed class TestCatalog
     public string Revision => _manifest.Revision;
     public IEnumerable<string> Paths => _manifest.Tests.Keys.Order(StringComparer.Ordinal);
 
+    // Load only the checked-in manifest and verify every required harness file before running tests.
     public static TestCatalog Load(string baseDirectory)
     {
         var manifest = JsonSerializer.Deserialize<Manifest>(File.ReadAllText(Path.Combine(baseDirectory, "smoke.json")), JsonOptions)
@@ -41,6 +42,7 @@ internal sealed class TestCatalog
 
     public string ReadHarness(string path) => ReadPinned(path, _manifest.Harness);
 
+    // Parse the small supported Test262 metadata subset and reject unpinned or ambiguous cases early.
     public TestCase ReadTest(string path)
     {
         if (!CasePath.IsMatch(path) || path.Split('/').Any(part => part is "." or ".."))
@@ -137,6 +139,7 @@ internal sealed class TestCatalog
         return new Negative(phase, type);
     }
 
+    // Manifest hashes make the harness and test inputs reproducible rather than trusting mutable files.
     private string ReadPinned(string path, Dictionary<string, string> hashes)
     {
         if (!hashes.TryGetValue(path, out string? expected))

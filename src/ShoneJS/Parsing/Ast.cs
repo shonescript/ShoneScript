@@ -39,6 +39,8 @@ public sealed record ReturnStmt(Expr? Value) : Stmt;
 public sealed record ThrowStmt(Expr Value) : Stmt;
 public sealed record TryStmt(BlockStmt Body, string? CatchName, BlockStmt? CatchBody, BlockStmt? FinallyBody) : Stmt;
 
+// Expressions retain source spans and parenthesization because both diagnostics and a few
+// JavaScript grammar restrictions (notably '**' and nullish/logical mixing) depend on them.
 public abstract record Expr
 {
     public SourceSpan Span { get; init; }
@@ -65,6 +67,8 @@ public sealed record CallExpr(Expr Target, List<Expr> Arguments) : Expr
 {
     public IReadOnlyList<TypeNode>? TypeArguments { get; init; }
 }
+// Optional chaining is represented as segments so each '.', '[]', and call can retain
+// whether that individual hop was optional.
 public sealed record OptionalChainExpr(Expr Target, IReadOnlyList<OptionalChainSegment> Segments) : Expr;
 public abstract record OptionalChainSegment(bool Optional);
 public sealed record ChainMember(Expr Key, bool Optional) : OptionalChainSegment(Optional);

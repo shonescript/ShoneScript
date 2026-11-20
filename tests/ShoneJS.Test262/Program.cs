@@ -6,6 +6,7 @@ namespace ShoneJS.Test262;
 
 internal static class Program
 {
+    // Parent and worker communicate success through an exact stdout token; diagnostics stay on stderr.
     private const string SuccessToken = "TEST262_PASS";
     private const string AsyncComplete = "Test262:AsyncTestComplete";
     private const string AsyncFailure = "Test262:AsyncTestFailure:";
@@ -113,6 +114,7 @@ internal static class Program
         }
     }
 
+    // Isolate each variant so globals cannot leak, and enforce a wall-clock bound outside the JS engine.
     private static async Task<string?> RunWorker(string path, Mode mode)
     {
         var start = new ProcessStartInfo
@@ -173,6 +175,7 @@ internal static class Program
 
         int completions = 0;
         string? asyncFailure = null;
+        // The pinned async harness reports completion or failure through print; drain queued jobs afterward.
         if (test.IsAsync)
         {
             engine.SetGlobal("print", JsValue.From(new JsFunction(args =>
@@ -184,6 +187,7 @@ internal static class Program
             })));
         }
 
+        // Raw tests intentionally bypass all harness setup and include scripts.
         if (mode != Mode.Raw)
         {
             try

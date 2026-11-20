@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 
 namespace ShoneJS.Runtime.Builtins;
 
+/// <summary>Installs weak collections and weak references backed by runtime weak-key storage.</summary>
 public static class WeakBuiltins
 {
     public static void Install(Action<string, JsValue> setGlobal, JsObject objectPrototype, Func<JsSymbol, bool>? isRegisteredSymbol = null)
@@ -97,6 +98,7 @@ public static class WeakBuiltins
     private static T Require<T>(JsValue receiver) where T : JsObject =>
         receiver.Data as T ?? throw JsException.TypeError("Incompatible receiver");
 
+    // Registered symbols are strongly reachable through the registry and cannot be weak keys.
     private static object RequireWeakKey(JsValue value, Func<JsSymbol, bool> isRegisteredSymbol)
     {
         if (value.Data is JsObject obj) return obj;

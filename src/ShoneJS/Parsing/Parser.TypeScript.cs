@@ -2,6 +2,7 @@ namespace ShoneJS.Parsing;
 
 public sealed partial class Parser
 {
+    // TypeScript declarations are syntax-only AST nodes; they do not become executable statements.
     private Stmt? TypeScriptStatement()
     {
         if (!typeScript) return null;
@@ -86,6 +87,8 @@ public sealed partial class Parser
 
     private Token PeekToken(int distance) => tokens[Math.Min(_index + distance, tokens.Count - 1)];
 
+    // Parenthesized arrows are ambiguous with grouped expressions (and '<' may start a generic).
+    // Parse speculatively, restoring both token and generic-closer state on failure.
     private bool TryParenthesizedArrow(out Expr arrow)
     {
         var saved = _index;
@@ -140,6 +143,8 @@ public sealed partial class Parser
         return new ArrowFunctionExpr(parameters, expression, null) { ReturnType = returnType, Span = new(start, expression.Span.End) };
     }
 
+    // In TSX-like syntax, '<...>' can be a comparison rather than type arguments; rollback
+    // keeps ordinary JavaScript expressions intact when the call shape does not match.
     private bool TryGenericCall(Expr target, out Expr call)
     {
         var saved = _index;
@@ -195,6 +200,8 @@ public sealed partial class Parser
         return ParseType();
     }
 
+    // The lexer emits >> and >>> as shift tokens. Type parsing splits those tokens virtually
+    // into multiple generic '>' closers without changing the shared token stream.
     private void NeedTypeGreater()
     {
         if (_pendingTypeClosers > 0)

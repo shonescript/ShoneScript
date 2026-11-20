@@ -12,6 +12,7 @@ public sealed class TypeScriptChecker
         @"^(?<file>.*?)(?:\((?<line>\d+),(?<column>\d+)\)|:(?<line2>\d+):(?<column2>\d+))\s*[-:]\s*(?<kind>error|warning)\s*(?<code>TS\d+)?\s*:?[ \t]*(?<message>.*)$",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+    /// <summary>Checks the original source with the configured TypeScript checker in no-emit mode.</summary>
     public TypeScriptCheckResult Check(string source, TypeScriptOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(source);
@@ -26,6 +27,7 @@ public sealed class TypeScriptChecker
         try
         {
             Directory.CreateDirectory(root);
+            // Keep the exact source snapshot used by the interpreter so diagnostic positions match.
             File.WriteAllText(file, source, new UTF8Encoding(false));
             var tool = ResolveTool(options.ToolPath);
             if (tool is null) return Failure("The TypeScript native checker was not found.");
@@ -81,6 +83,7 @@ public sealed class TypeScriptChecker
             using var process = Process.Start(psi);
             if (process is null) return new(false, false, -1, "Process could not be started.", "", "");
             using var deadline = new CancellationTokenSource(options.Timeout);
+            // Drain both pipes concurrently so diagnostic output cannot block the checker.
             var stdout = process.StandardOutput.ReadToEndAsync(deadline.Token);
             var stderr = process.StandardError.ReadToEndAsync(deadline.Token);
             try

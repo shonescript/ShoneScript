@@ -3,8 +3,10 @@ using Sdcb.Arithmetic;
 
 namespace ShoneJS.Runtime;
 
+/// <summary>JavaScript value categories represented by <see cref="JsValue"/>.</summary>
 public enum JsType { Undefined, Null, Boolean, Number, String, Object, Function, BigInt, Symbol }
 
+/// <summary>A symbol whose identity is independent of its optional description.</summary>
 public sealed class JsSymbol(string? description = null)
 {
     public string? Description { get; } = description;
@@ -12,6 +14,7 @@ public sealed class JsSymbol(string? description = null)
     public override string ToString() => $"Symbol({Description})";
 }
 
+/// <summary>A tagged JavaScript value; numbers and booleans are stored inline.</summary>
 public readonly struct JsValue
 {
     private readonly object? _reference;
@@ -41,6 +44,7 @@ public readonly struct JsValue
     public static JsValue From(BigInt value) => new(JsType.BigInt, value);
     public static JsValue From(JsSymbol value) => new(JsType.Symbol, value ?? throw new ArgumentNullException(nameof(value)));
 
+    /// <summary>Applies JavaScript truthiness without invoking object conversion hooks.</summary>
     public bool ToBoolean() => Type switch
     {
         JsType.Undefined or JsType.Null => false,
@@ -51,6 +55,7 @@ public readonly struct JsValue
         _ => true
     };
 
+    /// <summary>Converts primitive values to Number; BigInt and Symbol conversions throw.</summary>
     public double ToNumber() => Type switch
     {
         JsType.Null => 0,
@@ -60,6 +65,7 @@ public readonly struct JsValue
         _ => double.NaN
     };
 
+    /// <summary>Applies JavaScript string conversion; unlike <see cref="ToString"/>, Symbol conversion throws.</summary>
     public string ToJsString() => Type switch
     {
         JsType.Undefined => "undefined",

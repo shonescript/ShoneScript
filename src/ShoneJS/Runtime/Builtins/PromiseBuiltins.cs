@@ -50,6 +50,7 @@ internal sealed class PromiseBuiltins(JsObject objectPrototype, JsObject arrayPr
         setGlobal("Promise", JsValue.From(_constructor));
     }
 
+    // Reentrant drains leave newly queued work for the active loop to consume.
     public void DrainJobs(Action consumeIteration)
     {
         if (_draining) return;
@@ -99,6 +100,7 @@ internal sealed class PromiseBuiltins(JsObject objectPrototype, JsObject arrayPr
         return (resolve, reject);
     }
 
+    // Thenable assimilation is deferred to the job queue; plain values settle immediately.
     private void ResolvePromise(PromiseObject promise, JsValue value)
     {
         if (ReferenceEquals(value.Data, promise))

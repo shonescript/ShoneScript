@@ -3,6 +3,7 @@ using System.Globalization;
 
 namespace ShoneJS.Runtime;
 
+/// <summary>Ordinary JavaScript object storage and internal property operations.</summary>
 public class JsObject
 {
     private readonly OrderedDictionary<string, PropertyDescriptor> _properties = new(StringComparer.Ordinal);
@@ -51,6 +52,7 @@ public class JsObject
 
     public virtual PropertyDescriptor? GetOwnProperty(string key) => _properties.GetValueOrDefault(key);
 
+    /// <summary>Defines or updates an own property, returning false when its descriptor is incompatible.</summary>
     public virtual bool DefineOwnProperty(string key, PropertyDescriptor descriptor)
     {
         descriptor.Validate();
@@ -76,6 +78,7 @@ public class JsObject
         return descriptor.Configurable == true && _properties.Remove(key);
     }
 
+    /// <summary>Returns own string keys with array indices first in ascending numeric order.</summary>
     public virtual IEnumerable<string> OwnPropertyKeys() => _properties.Keys
         .Select(key => (Key: key, Index: TryArrayIndex(key, out var index) ? index : uint.MaxValue))
         .OrderBy(entry => entry.Index)
@@ -88,6 +91,7 @@ public class JsObject
 
     public virtual JsValue Get(string key) => Get(key, JsValue.From(this));
 
+    /// <summary>Reads through the prototype chain while preserving the original receiver for accessors.</summary>
     public virtual JsValue Get(string key, JsValue receiver)
     {
         var descriptor = GetOwnProperty(key);
@@ -100,6 +104,7 @@ public class JsObject
 
     public virtual void Set(string key, JsValue value) => Set(key, value, JsValue.From(this));
 
+    /// <summary>Writes using the supplied receiver, which may differ from the object holding the property.</summary>
     public virtual bool Set(string key, JsValue value, JsValue receiver)
     {
         var descriptor = GetOwnProperty(key);
@@ -151,6 +156,7 @@ public class JsObject
     }
 }
 
+/// <summary>An array-like object with indexed properties and a descriptor-controlled length.</summary>
 public sealed class JsArray : JsObject
 {
     public JsArray() => base.DefineOwnProperty("length", PropertyDescriptor.Data(JsValue.From(0d), writable: true));
@@ -229,6 +235,7 @@ public sealed class JsArray : JsObject
     }
 }
 
+/// <summary>A callable object with optional construction behavior.</summary>
 public sealed class JsFunction : JsObject
 {
     private readonly Func<JsValue, JsValue[], JsValue> _call;
@@ -252,6 +259,7 @@ public sealed class JsFunction : JsObject
 
     public JsValue Call(JsValue receiver, JsValue[] args) => _call(receiver, args);
 
+    // Native constructors currently support only themselves as newTarget.
     internal JsValue Construct(JsValue[] args, JsFunction? newTarget = null)
     {
         newTarget ??= this;

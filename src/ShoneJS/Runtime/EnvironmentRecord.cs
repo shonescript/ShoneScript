@@ -1,5 +1,6 @@
 namespace ShoneJS.Runtime;
 
+/// <summary>A lexical scope whose bindings may remain uninitialized until declaration execution.</summary>
 public sealed class EnvironmentRecord(EnvironmentRecord? parent = null)
 {
     private sealed class Binding(bool mutable, bool lexical)
@@ -15,6 +16,7 @@ public sealed class EnvironmentRecord(EnvironmentRecord? parent = null)
     internal bool HasOwn(string name) => _bindings.ContainsKey(name);
     internal bool HasLexical(string name) => _bindings.TryGetValue(name, out var binding) && binding.Lexical;
 
+    /// <summary>Creates and initializes a mutable non-lexical binding.</summary>
     public void Declare(string name, JsValue value)
     {
         Create(name, mutable: true, lexical: false);
@@ -55,6 +57,7 @@ public sealed class EnvironmentRecord(EnvironmentRecord? parent = null)
         binding.Value = value;
     }
 
+    // Uninitialized lexical bindings implement the temporal dead zone.
     private Binding GetBinding(string name)
     {
         var binding = _bindings[name];

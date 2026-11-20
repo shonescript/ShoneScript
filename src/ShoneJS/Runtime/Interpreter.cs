@@ -18,6 +18,7 @@ public sealed partial class Interpreter
     private int _remainingIterations;
     private int _callDepth;
     private int _scriptDepth;
+    /// <summary>Maximum loop and queued-job steps permitted by one script execution.</summary>
     public int MaximumLoopIterations { get; set; } = 1_000_000;
 
     private sealed class ReturnSignal(JsValue value) : Exception { public JsValue Value { get; } = value; }
@@ -111,6 +112,7 @@ public sealed partial class Interpreter
         }
     }
 
+    /// <summary>Runs pending promise jobs synchronously, subject to the execution iteration limit.</summary>
     public void DrainJobs()
     {
         var remaining = _remainingIterations;
@@ -158,6 +160,7 @@ public sealed partial class Interpreter
         throw JsException.TypeError("Cannot convert value to BigInt");
     }
 
+    /// <summary>Sets a global binding and mirrors non-lexical bindings on the global object.</summary>
     public void SetGlobal(string name, JsValue value)
     {
         if (_global.HasOwn(name)) _global.Set(name, value);
@@ -165,6 +168,7 @@ public sealed partial class Interpreter
         if (!_global.HasLexical(name)) _globalObject.Set(name, value);
     }
 
+    /// <summary>Reads a global binding, preferring lexical declarations over global-object properties.</summary>
     public JsValue GetGlobal(string name)
     {
         if (_global.HasLexical(name)) return _global.Get(name);
@@ -172,6 +176,7 @@ public sealed partial class Interpreter
         throw JsException.ReferenceError($"'{name}' is not defined");
     }
 
+    /// <summary>Executes parsed statements as a non-strict script and returns its completion value.</summary>
     public JsValue Execute(List<Stmt> statements) => Execute(statements, false);
 
     internal JsValue Execute(List<Stmt> statements, bool strict)

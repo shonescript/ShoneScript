@@ -30,8 +30,10 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, ParseGoal goal =
 
     private Token Need(TokenKind kind) => Current.Kind == kind ? Take() : throw Error($"Expected {kind}", Current);
 
+    // Parse a complete JavaScript script/module. Module goal is strict by definition.
     public List<Stmt> Parse() => StatementList(TokenKind.End, directives: true);
 
+    // TypeScript declarations are accepted only through this explicit entrypoint/mode.
     public List<Stmt> ParseTypeScript()
     {
         if (!typeScript) throw new InvalidOperationException("Parser was not created in TypeScript mode");
@@ -40,6 +42,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, ParseGoal goal =
         return statements;
     }
 
+    // Parse exactly one expression; unlike statement parsing, trailing tokens are an error.
     public Expr ParseExpression()
     {
         var expression = Expression();
@@ -47,6 +50,8 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, ParseGoal goal =
         return expression;
     }
 
+    // Directive prologues must be handled before ordinary statements so "use strict"
+    // can affect validation of the rest of the containing scope.
     private List<Stmt> StatementList(TokenKind end, bool directives = false)
     {
         var statements = new List<Stmt>();
@@ -76,6 +81,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, ParseGoal goal =
         return statements;
     }
 
+    // Implements automatic semicolon insertion at EOF, before '}', or after a line break.
     private void Semicolon()
     {
         if (Match(TokenKind.Semicolon) || Current.Kind is TokenKind.End or TokenKind.RightBrace || LineBreak) return;
@@ -403,6 +409,8 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, ParseGoal goal =
         }
     }
 
+    // TypeScript 'as'/'satisfies' assertions share the postfix stage with conditional,
+    // assignment, and binary operators, but are never emitted as JavaScript operations.
     private Expr ContinueAfterPostfix(Expr left, int minPrecedence)
     {
         while (true)
@@ -688,6 +696,8 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, ParseGoal goal =
         return true;
     }
 
+    // Conversion is context-sensitive: legacy leading-zero literals are valid in sloppy
+    // JavaScript but rejected in strict scripts and modules.
     private double Number(Token token)
     {
         var text = token.Text;

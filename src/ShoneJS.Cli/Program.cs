@@ -5,6 +5,7 @@ using ShoneJS.TypeScript;
 
 const string usage = "Usage: ShoneJS.Cli [--ts] [-e <script>]\nPipe a complete script to stdin or use the JavaScript prompt with no arguments.\nTypeScript mode requires SHONEJS_TSGO to point to the native checker.";
 
+// --ts is a leading mode switch; remaining arguments select expression, redirected input, or the prompt.
 var typeScript = args.Length > 0 && args[0] == "--ts";
 if (typeScript) args = args[1..];
 
@@ -48,6 +49,7 @@ while (true)
         Evaluate(engine, line);
 }
 
+// Keep script evaluation and job draining together so promise jobs finish before the result is printed.
 static int Evaluate(Engine engine, string source, bool typeScript = false)
 {
     try
