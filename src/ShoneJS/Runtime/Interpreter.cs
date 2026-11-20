@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 using Sdcb.Arithmetic;
-using ShoneJS.Parsing;
+using ShoneScript.Parsing;
 
-namespace ShoneJS.Runtime;
+namespace ShoneScript.Runtime;
 
 public sealed partial class Interpreter
 {

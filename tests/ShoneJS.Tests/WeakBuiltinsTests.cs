@@ -1,9 +1,9 @@
 // Copyright (c) 2026 Shone
 // SPDX-License-Identifier: MIT
 
-using ShoneJS.Runtime;
+using ShoneScript.Runtime;
 
-namespace ShoneJS.Tests;
+namespace ShoneScript.Tests;
 
 public class WeakBuiltinsTests
 {

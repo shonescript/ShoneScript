@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Shone
 // SPDX-License-Identifier: MIT
 
-namespace ShoneJS.Parsing;
+namespace ShoneScript.Parsing;
 
 // Type nodes are preserved in the AST for tooling/analysis; they describe TypeScript syntax
 // and are not runtime JavaScript expressions.

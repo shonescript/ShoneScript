@@ -10,7 +10,7 @@
     <IsPackable>false</IsPackable>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="../../src/ShoneJS/ShoneJS.csproj" />
+    <ProjectReference Include="..\..\src\ShoneJs\ShoneJs.csproj" />
     <None Update="smoke.json;upstream/**/*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

@@ -1,11 +1,11 @@
 // Copyright (c) 2026 Shone
 // SPDX-License-Identifier: MIT
 
-using ShoneJS;
-using ShoneJS.Parsing;
-using ShoneJS.Runtime;
+using ShoneScript;
+using ShoneScript.Parsing;
+using ShoneScript.Runtime;
 
-namespace ShoneJS.Tests;
+namespace ShoneScript.Tests;
 
 public class EngineTests
 {

@@ -7,7 +7,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
-namespace ShoneJS.Test262;
+namespace ShoneScript.Test262;
 
 internal enum Mode { Sloppy, Strict, Raw }
 internal sealed record Negative(string Phase, string Type);

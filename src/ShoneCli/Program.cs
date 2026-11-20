@@ -1,12 +1,12 @@
 // Copyright (c) 2026 Shone
 // SPDX-License-Identifier: MIT
 
-using ShoneJS;
-using ShoneJS.Parsing;
-using ShoneJS.Runtime;
+using ShoneScript;
+using ShoneScript.Parsing;
+using ShoneScript.Runtime;
 using ShonePy;
 
-const string usage = "Usage: ShoneJS.Cli [--ts | --py] [-e <script>]\nPipe a complete script to stdin or use the JavaScript prompt with no arguments.";
+const string usage = "Usage: ShoneScript [--ts | --py] [-e <script>]\nPipe a complete script to stdin or use the JavaScript prompt with no arguments.";
 
 var typeScript = args is ["--ts", ..];
 var python = args is ["--py", ..];
@@ -46,7 +46,7 @@ if (typeScript)
     return 2;
 }
 
-Console.WriteLine("ShoneJS. Enter one script per line. Type .exit to quit.");
+Console.WriteLine("ShoneJs. Enter one script per line. Type .exit to quit.");
 while (true)
 {
     Console.Write("js> ");

@@ -1,10 +1,10 @@
 // Copyright (c) 2026 Shone
 // SPDX-License-Identifier: MIT
 
-using ShoneJS.Parsing;
-using ShoneJS.Runtime;
+using ShoneScript.Parsing;
+using ShoneScript.Runtime;
 
-namespace ShoneJS;
+namespace ShoneScript;
 
 /// <summary>Configures execution limits for an engine.</summary>
 public sealed class EngineOptions
@@ -69,7 +69,7 @@ public sealed class Engine
     public JsValue Evaluate(string source) => Execute(ParseScript(source));
 
     /// <summary>Parses supported TypeScript syntax without executing it.</summary>
-    /// <exception cref="JsSyntaxException">The source could not be parsed by ShoneJS.</exception>
+    /// <exception cref="JsSyntaxException">The source could not be parsed by ShoneJs.</exception>
     public CheckedTypeScript ParseTypeScript(string source)
     {
         ArgumentNullException.ThrowIfNull(source);

@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Shone
 // SPDX-License-Identifier: MIT
 
-using ShoneJS;
-using ShoneJS.Runtime;
+using ShoneScript;
+using ShoneScript.Runtime;
 using ShonePy.Interop;
 
 namespace ShonePy.Tests;

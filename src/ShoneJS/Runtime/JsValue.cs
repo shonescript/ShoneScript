@@ -4,7 +4,7 @@
 using System.Globalization;
 using Sdcb.Arithmetic;
 
-namespace ShoneJS.Runtime;
+namespace ShoneScript.Runtime;
 
 /// <summary>JavaScript value categories represented by <see cref="JsValue"/>.</summary>
 public enum JsType { Undefined, Null, Boolean, Number, String, Object, Function, BigInt, Symbol }

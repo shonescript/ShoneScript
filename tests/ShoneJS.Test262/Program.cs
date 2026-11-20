@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 using System.Diagnostics;
-using ShoneJS.Parsing;
-using ShoneJS.Runtime;
+using ShoneScript.Parsing;
+using ShoneScript.Runtime;
 
-namespace ShoneJS.Test262;
+namespace ShoneScript.Test262;
 
 internal static class Program
 {
@@ -19,7 +19,7 @@ internal static class Program
     {
         if (args.Length == 1 && args[0] is "--help" or "-h")
         {
-            Console.WriteLine("Usage: dotnet run --project tests/ShoneJS.Test262 [--list | <pinned test path> [--mode sloppy|strict|raw]]");
+            Console.WriteLine("Usage: dotnet run --project tests/ShoneJs.Test262 [--list | <pinned test path> [--mode sloppy|strict|raw]]");
             Console.WriteLine("Executes the pinned Test262 script smoke suite with the pinned upstream harness.");
             Console.WriteLine($"Each variant runs in a fresh worker with a {WorkerTimeout.TotalSeconds:g}-second timeout.");
             return 0;

@@ -3,7 +3,7 @@
 
 using System.Runtime.CompilerServices;
 
-namespace ShoneJS.Runtime.Builtins;
+namespace ShoneScript.Runtime.Builtins;
 
 /// <summary>Installs weak collections and weak references backed by runtime weak-key storage.</summary>
 public static class WeakBuiltins

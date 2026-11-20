@@ -5,7 +5,7 @@ using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text;
 
-namespace ShoneJS.Runtime.Builtins;
+namespace ShoneScript.Runtime.Builtins;
 
 internal static class JsonBuiltins
 {

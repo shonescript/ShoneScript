@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Shone
 // SPDX-License-Identifier: MIT
 
-namespace ShoneJS.Runtime;
+namespace ShoneScript.Runtime;
 
 /// <summary>An abrupt completion caused by a JavaScript throw.</summary>
 public sealed class JsException : InvalidOperationException

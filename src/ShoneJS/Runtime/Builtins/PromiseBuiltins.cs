@@ -4,7 +4,7 @@
 using System.Globalization;
 using System.Text;
 
-namespace ShoneJS.Runtime.Builtins;
+namespace ShoneScript.Runtime.Builtins;
 
 internal sealed class PromiseBuiltins(JsObject objectPrototype, JsObject arrayPrototype, Action<JsException> attachErrorPrototype)
 {

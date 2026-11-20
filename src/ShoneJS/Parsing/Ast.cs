@@ -3,7 +3,7 @@
 
 using Sdcb.Arithmetic;
 
-namespace ShoneJS.Parsing;
+namespace ShoneScript.Parsing;
 
 public abstract record Stmt
 {

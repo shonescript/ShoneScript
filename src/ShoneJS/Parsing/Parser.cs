@@ -4,7 +4,7 @@
 using System.Globalization;
 using Sdcb.Arithmetic;
 
-namespace ShoneJS.Parsing;
+namespace ShoneScript.Parsing;
 
 public enum ParseGoal { Script, Module }
 

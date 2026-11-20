@@ -9,7 +9,7 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="../ShoneJS/ShoneJS.csproj" />
+    <ProjectReference Include="../ShoneJs/ShoneJs.csproj" />
     <ProjectReference Include="../ShonePy/ShonePy.csproj" />
   </ItemGroup>
 </Project>

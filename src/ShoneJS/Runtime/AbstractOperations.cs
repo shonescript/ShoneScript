@@ -4,7 +4,7 @@
 using System.Globalization;
 using Sdcb.Arithmetic;
 
-namespace ShoneJS.Runtime;
+namespace ShoneScript.Runtime;
 
 /// <summary>Shared ECMAScript-style coercion and comparison operations.</summary>
 public static class AbstractOperations
