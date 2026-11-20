@@ -1,6 +1,6 @@
 # ShoneScript
 
-ShoneScript 基于.NET 11 和 C# 编写的脚本解释器，支持高效解析运行 JavaScript (ES2024) 、TypeScript (7.0)、Python (3.15) 脚本。可通过命令行运行脚本，也可以嵌入 .NET 应用，其中 TypeScript 模式直接解析和执行支持范围内的 `.ts` 源码，不运行静态类型检查。
+ShoneScript 是基于.NET 11 和 C# 编写的脚本解释器，支持高效解析运行 JavaScript (ES2024) 、TypeScript (7.0)、Python (3.15) 脚本。可通过命令行运行脚本，也可以嵌入 .NET 应用，其中 TypeScript 模式直接解析和执行支持范围内的 `.ts` 源码，不运行静态类型检查。
 
 ## 快速开始 Javascript
 
@@ -128,6 +128,6 @@ SHONEPY_CPYTHON=/absolute/path/to/python dotnet test tests/ShonePy.Tests -c Rele
 
 ## 许可
 
-ShoneJs 由 Shone 编写，采用 MIT 许可证。见 [LICENSE](LICENSE)。
+ShoneJs 由 Shone 利用 gpt-sol-6.2 编写和修改，采用 MIT 许可证。见 [LICENSE](LICENSE)。
 
 随仓库分发的 Test262 文件遵循其上游许可。见 [Test262 LICENSE](tests/ShoneJs.Test262/upstream/LICENSE)。
