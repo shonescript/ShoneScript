@@ -12,6 +12,7 @@ internal static class PyModules
     public static PyDict Import(string name) => name switch
     {
         "math" => MathModule(),
+        "bigfloat" => PyBigFloatModule.CreateModule(),
         "json" => JsonModule(),
         "re" => PyRegexModule.CreateModule(),
         "functools" => PyFunctoolsModule.CreateModule(),

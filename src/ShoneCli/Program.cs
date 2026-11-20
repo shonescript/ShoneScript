@@ -6,11 +6,24 @@ using ShoneJs.Parsing;
 using ShoneJs.Runtime;
 using ShonePy;
 
-const string usage = "Usage: ShoneScript [--ts | --py] [-e <script>]\nPipe a complete script to stdin or use the JavaScript prompt with no arguments.";
+const string usage = "Usage: ShoneScript [--ts] [--bigfloat] [-e <script>]\n       ShoneScript --py [-e <script>]\nPipe a complete script to stdin or use the JavaScript prompt with no arguments.";
 
-var typeScript = args is ["--ts", ..];
 var python = args is ["--py", ..];
-if (typeScript || python) args = args[1..];
+if (python) args = args[1..];
+
+bool typeScript = false, enableBigFloat = false;
+if (!python)
+{
+    int optionCount = 0;
+    while (optionCount < args.Length)
+    {
+        if (!typeScript && args[optionCount] == "--ts") typeScript = true;
+        else if (!enableBigFloat && args[optionCount] == "--bigfloat") enableBigFloat = true;
+        else break;
+        optionCount++;
+    }
+    args = args[optionCount..];
+}
 
 if (args is ["-h" or "--help"])
 {
@@ -26,7 +39,7 @@ if (python)
     return 2;
 }
 
-var engine = new Engine();
+var engine = new Engine(new EngineOptions { EnableBigFloat = enableBigFloat });
 
 if (args is ["-e", var source])
     return Evaluate(engine, source, typeScript);

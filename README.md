@@ -1,7 +1,6 @@
 # ShoneScript
 
-ShoneScript 是一个用 C# 编写的 JavaScript(ES2024) 、TypeScript(7.0)、Python(3.15) 解释器，面向 .NET 11。可通过命令行运行脚本，也可以嵌入 .NET 应用。
-其中 TypeScript 模式直接解析和执行支持范围内的 `.ts` 源码，不运行静态类型检查。
+ShoneScript 基于.NET 11 和 C# 编写的脚本解释器，支持高效解析运行 JavaScript (ES2024) 、TypeScript (7.0)、Python (3.15) 脚本。可通过命令行运行脚本，也可以嵌入 .NET 应用，其中 TypeScript 模式直接解析和执行支持范围内的 `.ts` 源码，不运行静态类型检查。
 
 ## 快速开始 Javascript
 
@@ -65,7 +64,7 @@ TypeScript 宿主可使用 `Engine.EvaluateTypeScript`，或分别调用 `ParseT
 
 | 范围 | 当前实现 |
 | --- | --- |
-| JavaScript | 覆盖常见脚本语法、闭包、属性描述符、稀疏数组、BigInt、部分 Promise、Proxy 和 TypedArray 行为，以及 `findLast`、`toSorted` 等 ES2023 数组方法。 |
+| JavaScript | 覆盖常见脚本语法、闭包、属性描述符、稀疏数组、BigInt、BigFloat(扩展)、部分 Promise、Proxy 和 TypedArray 行为，以及 `findLast`、`toSorted` 等 ES2023 数组方法。 |
 | TypeScript | 支持单文件脚本，以及变量、参数、返回值类型注解、接口、类型别名、常见泛型、带类型的箭头函数、类型断言、`satisfies`、非空断言和普通枚举。 |
 | Python | 面向 Python 3.15 的子集，支持条件表达式、缩进代码块、循环、函数默认参数、仅限位置和仅限关键字参数、`*args`、`**kwargs`、调用参数展开、闭包、`global` 与 `nonlocal` 的基本绑定，以及列表、字典和集合推导式、带星号的解包、Python 3.15 的推导式与生成器表达式展开（PEP 798）、序列切片读取、列表切片赋值、惰性 `range`、可变 `set`（集合运算及常用方法）和不可变 `bytes`（字面量、构造、索引、切片及基本序列运算）。支持内置异常类型的 `raise`、异常链（含 `raise … from`）和 `try` / `except` / `else` / `finally`，以及同步 `with`。支持 Python 类、实例属性、`__init__`、绑定方法、基于 C3 的多重继承、`super()`，以及函数和类装饰器、`staticmethod`、`classmethod` 和 `property`。`match` / `case` 支持字面量、捕获、通配符、序列、映射、用户自定义类、备选模式和守卫条件。同步生成器支持常见控制流中的 `yield`、`yield from` 和 `return`，也支持惰性生成器表达式。类、字典或宿主可以提供 `__enter__` 和 `__exit__`，异常退出时的 traceback 参数为 `None`。托管标准库覆盖部分 `math`、`json`、`re`、`sys`、`functools`、`itertools`、`collections.Counter` 和 `datetime`（日期、无时区的时间和日期时间、时间差）和 `typing`（`cast`、`assert_type`、`assert_never`）。完整语言和核心标准库兼容性仍在开发。支持托管协程的 `async def`、`await`、`async for`、`async with`、`aiter()` 和 `anext()`。支持异步列表、集合和字典推导式，包括混合 `for` 与 `async for` 子句。宿主使用 `PythonEngine.RunCoroutine` 同步驱动协程。事件循环、自定义 awaitable、异步生成器函数及表达式、同步生成器的 `send` / `throw` / `close` 以及通用描述符协议仍待实现。 |
 | 待实现或验证 | 完整 ECMAScript 和 TypeScript 7.0 一致性，以及类、模块链接、命名空间、`const enum`、装饰器和 TSX 等能力。 |
@@ -85,6 +84,13 @@ TypeScript 宿主可使用 `Engine.EvaluateTypeScript`，或分别调用 `ParseT
 | `typing` | `cast`、`assert_type`、`assert_never` | 提供运行时辅助函数。 |
 
 具体行为可查看单元测试和对照用例。JavaScript 的覆盖范围另见固定的 Test262 smoke 清单。
+
+### BigFloat 支持
+ShoneJs、TypeScript 和 ShonePy 均接入 Sdcb.Arithmetic.BigFloat，使用项目已有的 Sdcb.Arithmetic 2.0.0 依赖。精度以二进制位计，默认 128 位，可指定 2 至 65,536 位。双目运算采用两个操作数中较高的精度。需要保留原始十进制输入时，请传入字符串，以免输入先经普通浮点数舍入。运算结果超出指数上限时，脚本会收到可捕获的异常。
+
+ShoneJs / TypeScript 默认关闭 BigFloat 支持，宿主可设置 EngineOptions.EnableBigFloat = true，命令行可加 --bigfloat，并可与 --ts 一起使用。
+
+ShonePy 通过 bigfloat 模块按需导入，支持算术运算符、数值比较、平方根和指定精度的 π。
 
 ## 构建与验证
 
@@ -107,6 +113,7 @@ ShonePy 的可选对照测试比较结果表示、标准输出和异常类型。
 ```bash
 SHONEPY_CPYTHON=/absolute/path/to/python dotnet test tests/ShonePy.Tests -c Release --filter FullyQualifiedName~CPythonDifferentialTests
 ```
+验证结果：ShoneJs 450 项通过，ShonePy 610 项通过、4 项 CPython 对照测试跳过，Test262 冒烟测试 111 项全部通过。JS、TS 和 Python 的命令行示例均已实测。
 
 ## 项目结构
 

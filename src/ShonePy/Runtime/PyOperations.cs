@@ -3,6 +3,7 @@
 
 using System.Text;
 using Sdcb.Arithmetic;
+using ShoneJs.Runtime;
 using ShonePy.Modules;
 
 namespace ShonePy;
@@ -21,6 +22,7 @@ public static class PyOperations
         if (a.Type != b.Type) return false;
         return a.Type switch
         {
+            PyType.BigFloat => (BigFloat)a.Data! == (BigFloat)b.Data!,
             PyType.None => true,
             PyType.Boolean => (bool)a.Data! == (bool)b.Data!,
             PyType.String => (string)a.Data! == (string)b.Data!,
@@ -50,14 +52,15 @@ public static class PyOperations
     }
     public static void EnsureHashable(PyValue value)
     {
-        if (value.Type is PyType.List or PyType.Dictionary or PyType.Set or PyType.Callable)
+        if (value.Type is PyType.List or PyType.Dictionary or PyType.Set or PyType.Callable or PyType.BigFloat)
             throw new PythonException("TypeError", $"unhashable type: '{TypeName(value)}'");
         if (value.Data is PyTuple tuple)
             foreach (var item in tuple) EnsureHashable(item);
     }
     public static PyValue Unary(string op, PyValue value) => op switch
     {
-        "not" => PyValue.From(!value.IsTruthy()), "+" when IsNumber(value) => value,
+        "not" => PyValue.From(!value.IsTruthy()), "+" when IsNumber(value) || value.Type == PyType.BigFloat => value,
+        "-" when value.Type == PyType.BigFloat => PyValue.From(-(BigFloat)value.Data!),
         "-" when value.Type == PyType.Integer => PyValue.From(-(BigInt)value.Data!),
         "-" when IsNumber(value) => PyValue.From(-Number(value)),
         "~" when value.Type == PyType.Integer => PyValue.From(~(BigInt)value.Data!),
@@ -81,6 +84,24 @@ public static class PyOperations
             return Repeat(a, Integer(b));
         if (op == "*" && (b.Type == PyType.String || b.Type == PyType.List || b.Type == PyType.Tuple) && IsInteger(a))
             return Repeat(b, Integer(a));
+        if (a.Data is BigFloat leftBigFloat && b.Data is BigFloat rightBigFloat && op is "+" or "-" or "*" or "/")
+        {
+            EnsureBigFloatMagnitude(leftBigFloat);
+            EnsureBigFloatMagnitude(rightBigFloat);
+            int precision = Math.Max(leftBigFloat.Precision, rightBigFloat.Precision);
+            if (op == "/" && rightBigFloat.IsZero)
+                throw new PythonException("ZeroDivisionError", "BigFloat division by zero");
+
+            BigFloat result = op switch
+            {
+                "+" => BigFloat.Add(leftBigFloat, rightBigFloat, precision, BigFloatSupport.Rounding),
+                "-" => BigFloat.Subtract(leftBigFloat, rightBigFloat, precision, BigFloatSupport.Rounding),
+                "*" => BigFloat.Multiply(leftBigFloat, rightBigFloat, precision, BigFloatSupport.Rounding),
+                _ => BigFloat.Divide(leftBigFloat, rightBigFloat, precision, BigFloatSupport.Rounding)
+            };
+            EnsureBigFloatMagnitude(result);
+            return PyValue.From(result);
+        }
         if (!IsNumericOrBoolean(a) || !IsNumericOrBoolean(b)) throw new PythonException("TypeError", $"unsupported operand type(s) for {op}: '{TypeName(a)}' and '{TypeName(b)}'");
         var ints = IsInteger(a) && IsInteger(b);
         if (ints)
@@ -100,6 +121,12 @@ public static class PyOperations
         var l = Number(a); var r = Number(b);
         return op switch { "+" => PyValue.From(l+r), "-" => PyValue.From(l-r), "*" => PyValue.From(l*r), "/" => r == 0 ? throw new PythonException("ZeroDivisionError", "division by zero") : PyValue.From(l/r), "//" => PyValue.From(Math.Floor(l/r)), "%" => PyValue.From(l-Math.Floor(l/r)*r), "**" => PyValue.From(Math.Pow(l,r)), _ => throw new PythonException("TypeError", $"unsupported operator {op}") };
     }
+    private static void EnsureBigFloatMagnitude(BigFloat value)
+    {
+        if (!BigFloatSupport.IsMagnitudeSupported(value))
+            throw new PythonException("OverflowError", "BigFloat magnitude exceeds the interpreter arithmetic limit");
+    }
+
     public static bool Compare(PyValue a, string op, PyValue b)
     {
         if (op == "==") return Equal(a, b);
@@ -113,6 +140,15 @@ public static class PyOperations
                 "<=" => leftSet.IsSubsetOf(rightSet),
                 ">" => leftSet.Count > rightSet.Count && rightSet.IsSubsetOf(leftSet),
                 ">=" => rightSet.IsSubsetOf(leftSet),
+                _ => throw new PythonException("SyntaxError", $"unknown comparison {op}")
+            };
+        if (a.Data is BigFloat leftBigFloat && b.Data is BigFloat rightBigFloat)
+            return op switch
+            {
+                "<" => leftBigFloat < rightBigFloat,
+                "<=" => leftBigFloat <= rightBigFloat,
+                ">" => leftBigFloat > rightBigFloat,
+                ">=" => leftBigFloat >= rightBigFloat,
                 _ => throw new PythonException("SyntaxError", $"unknown comparison {op}")
             };
         int cmp;
@@ -411,5 +447,5 @@ public static class PyOperations
         return fraction > 0 ? -1 : fraction < 0 ? 1 : 0;
     }
     private static double Number(PyValue v) => v.Type switch { PyType.Integer => (double)(BigInt)v.Data!, PyType.Boolean => (bool)v.Data! ? 1 : 0, _ => (double)v.Data! };
-    public static string TypeName(PyValue value) => value.Data is PyDateTimeModule.Value temporal ? temporal.Type.ToString() : value.Type switch { PyType.Super=>"super", PyType.Coroutine=>"coroutine", PyType.None=>"NoneType", PyType.Boolean=>"bool", PyType.Integer=>"int", PyType.Float=>"float", PyType.String=>"str", PyType.Bytes=>"bytes", PyType.List=>"list", PyType.Tuple=>"tuple", PyType.Range=>"range", PyType.Set=>"set", PyType.Dictionary when value.Data is PyCounter=>"Counter", PyType.Dictionary=>"dict", PyType.Iterator=>((PyIterator)value.Data!).Name, PyType.ExceptionClass or PyType.Class=>"type", PyType.Descriptor=>((Runtime.PyDescriptor)value.Data!).TypeName, PyType.Instance=>((Runtime.PyInstance)value.Data!).Class.Name, PyType.Exception=>((Runtime.PyExceptionInstance)value.Data!).Type.Name, _=>"function" };
+    public static string TypeName(PyValue value) => value.Data is PyDateTimeModule.Value temporal ? temporal.Type.ToString() : value.Type switch { PyType.Super=>"super", PyType.Coroutine=>"coroutine", PyType.None=>"NoneType", PyType.Boolean=>"bool", PyType.Integer=>"int", PyType.Float=>"float", PyType.BigFloat=>"BigFloat", PyType.String=>"str", PyType.Bytes=>"bytes", PyType.List=>"list", PyType.Tuple=>"tuple", PyType.Range=>"range", PyType.Set=>"set", PyType.Dictionary when value.Data is PyCounter=>"Counter", PyType.Dictionary=>"dict", PyType.Iterator=>((PyIterator)value.Data!).Name, PyType.ExceptionClass or PyType.Class=>"type", PyType.Descriptor=>((Runtime.PyDescriptor)value.Data!).TypeName, PyType.Instance=>((Runtime.PyInstance)value.Data!).Class.Name, PyType.Exception=>((Runtime.PyExceptionInstance)value.Data!).Type.Name, _=>"function" };
 }

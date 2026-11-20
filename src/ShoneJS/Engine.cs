@@ -6,11 +6,14 @@ using ShoneJs.Runtime;
 
 namespace ShoneJs;
 
-/// <summary>Configures execution limits for an engine.</summary>
+/// <summary>Configures features and execution limits for an engine.</summary>
 public sealed class EngineOptions
 {
     /// <summary>Sets the iteration budget used by script execution and Promise job draining.</summary>
     public int MaximumLoopIterations { get; set; } = 1_000_000;
+
+    /// <summary>Installs the BigFloat global when the engine is created.</summary>
+    public bool EnableBigFloat { get; set; }
 }
 
 /// <summary>A parsed JavaScript script that can be passed to <see cref="Engine.Execute"/>.</summary>
@@ -38,11 +41,15 @@ public sealed class CheckedTypeScript
 /// <remarks>Executions on an instance share globals and pending Promise jobs. Use a separate instance for independent sessions.</remarks>
 public sealed class Engine
 {
-    private readonly Interpreter _interpreter = new();
-    /// <summary>Gets the configuration used by subsequent calls.</summary>
+    private readonly Interpreter _interpreter;
+    /// <summary>Gets the engine configuration.</summary>
     public EngineOptions Options { get; }
     /// <summary>Creates an engine with a fresh global environment.</summary>
-    public Engine(EngineOptions? options = null) => Options = options ?? new EngineOptions();
+    public Engine(EngineOptions? options = null)
+    {
+        Options = options ?? new EngineOptions();
+        _interpreter = new Interpreter(Options.EnableBigFloat);
+    }
 
     /// <summary>Parses JavaScript without executing it.</summary>
     public ParsedScript ParseScript(string source) => ParseScript(source, forceStrict: false);

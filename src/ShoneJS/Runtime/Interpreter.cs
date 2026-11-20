@@ -28,7 +28,9 @@ public sealed partial class Interpreter
     private sealed class BreakSignal : Exception;
     private sealed class ContinueSignal : Exception;
 
-    public Interpreter()
+    public Interpreter() : this(enableBigFloat: false) { }
+
+    internal Interpreter(bool enableBigFloat)
     {
         _env = _varEnv = _global;
         _objectPrototype = Builtins.ObjectBuiltins.Install(SetGlobal, () => _arrayPrototype);
@@ -72,6 +74,7 @@ public sealed partial class Interpreter
             bigInt.DefineOwnProperty(name, PropertyDescriptor.Data(JsValue.From(method), writable: true, configurable: true));
         }
         SetGlobal("BigInt", JsValue.From(bigInt));
+        if (enableBigFloat) Builtins.BigFloatBuiltins.Install(SetGlobal, _objectPrototype);
         InstallSymbol();
         Builtins.WeakBuiltins.Install(SetGlobal, _objectPrototype, static symbol => symbol.RegistryKey is not null);
         Builtins.TypedArrayBuiltins.Install(SetGlobal, _objectPrototype);

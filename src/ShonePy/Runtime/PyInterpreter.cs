@@ -978,6 +978,7 @@ public sealed partial class PyInterpreter
             return name == "__class__" ? _builtins.Get("super") : proxy.GetAttribute(name, ChargeSuperLookup);
         if (target.Data is PyDescriptor descriptor) return descriptor.GetAttribute(name);
         if (target.Data is PyDateTimeModule.Value temporal) return temporal.GetAttribute(name);
+        if (target.Data is BigFloat number) return PyBigFloatModule.GetAttribute(number, name);
         if (target.Data is PyRange range) return range.GetAttribute(name);
         if (target.Data is PyIterator { Name: "generator" } generator)
         {

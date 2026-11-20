@@ -8,7 +8,7 @@ using ShonePy.Runtime;
 
 namespace ShonePy;
 
-public enum PyType { None, Boolean, Integer, Float, String, List, Tuple, Dictionary, Callable, Iterator, ExceptionClass, Exception, Temporal, Range, Set, Bytes, Class, Instance, Descriptor, Super, Coroutine }
+public enum PyType { None, Boolean, Integer, Float, String, List, Tuple, Dictionary, Callable, Iterator, ExceptionClass, Exception, Temporal, Range, Set, Bytes, Class, Instance, Descriptor, Super, Coroutine, BigFloat }
 
 /// <summary>A Python value in the supported first-milestone runtime.</summary>
 public readonly struct PyValue : IEquatable<PyValue>
@@ -27,6 +27,7 @@ public readonly struct PyValue : IEquatable<PyValue>
     public static PyValue From(int value) => From(new BigInt(value));
     public static PyValue From(long value) => From(new BigInt(value));
     public static PyValue From(double value) => new(PyType.Float, value);
+    public static PyValue From(BigFloat value) => new(PyType.BigFloat, value);
     public static PyValue From(string value) => new(PyType.String, value);
     public static PyValue From(PyBytes value) => new(PyType.Bytes, value);
     public static PyValue From(PyList value) => new(PyType.List, value);
@@ -47,7 +48,7 @@ public readonly struct PyValue : IEquatable<PyValue>
     public static PyValue From(object? value) => value switch
     {
         null => None, PyValue py => py, bool b => From(b), BigInt n => From(n), int n => From(n), long n => From(n),
-        double n => From(n), float n => From(n), string s => From(s), PyList l => From(l), PyTuple t => From(t), PyDict d => From(d), PyCallable c => From(c), PyIterator iterator => From(iterator), PyCoroutine coroutine => From(coroutine),
+        double n => From(n), float n => From(n), BigFloat n => From(n), string s => From(s), PyList l => From(l), PyTuple t => From(t), PyDict d => From(d), PyCallable c => From(c), PyIterator iterator => From(iterator), PyCoroutine coroutine => From(coroutine),
         PyDateTimeModule.Value temporal => From(temporal), PyRange range => From(range), PySet set => From(set), PyBytes bytes => From(bytes),
         PyClass cls => From(cls), PyInstance instance => From(instance), PyDescriptor descriptor => From(descriptor), PySuper super => From(super),
         _ => throw new ArgumentException($"Unsupported Python value: {value.GetType().Name}")
@@ -56,7 +57,8 @@ public readonly struct PyValue : IEquatable<PyValue>
     public bool IsTruthy() => Type switch
     {
         PyType.None => false, PyType.Boolean => (bool)Data!, PyType.Integer => (BigInt)Data! != BigInt.Zero,
-        PyType.Float => (double)Data! != 0, PyType.String => ((string)Data!).Length != 0,
+        PyType.Float => (double)Data! != 0, PyType.BigFloat => !((BigFloat)Data!).IsZero,
+        PyType.String => ((string)Data!).Length != 0,
         PyType.List => ((PyList)Data!).Count != 0, PyType.Tuple => ((PyTuple)Data!).Count != 0,
         PyType.Dictionary => ((PyDict)Data!).Count != 0, PyType.Range => !((PyRange)Data!).Length.IsZero,
         PyType.Set => ((PySet)Data!).Count != 0, PyType.Bytes => ((PyBytes)Data!).Count != 0,
@@ -78,7 +80,8 @@ public readonly struct PyValue : IEquatable<PyValue>
     public string ToPythonString() => Type switch
     {
         PyType.None => "None", PyType.Boolean => (bool)Data! ? "True" : "False", PyType.Integer => Data!.ToString()!,
-        PyType.Float => FormatFloat((double)Data!), PyType.String => (string)Data!,
+        PyType.Float => FormatFloat((double)Data!), PyType.BigFloat => PyBigFloatModule.Format((BigFloat)Data!),
+        PyType.String => (string)Data!,
         _ => Data?.ToString() ?? "None"
     };
     private static string FormatFloat(double value)
