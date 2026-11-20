@@ -205,7 +205,7 @@ public sealed partial class Interpreter
         foreach (var statement in statements)
         {
             var value = Exec(statement);
-            if (statement is not (VarStmt or VarListStmt or FunctionStmt)) result = value;
+            if (statement is not (VarStmt or VarListStmt or FunctionStmt or TypeAliasStmt or InterfaceStmt or EnumStmt)) result = value;
         }
         return result;
     }
@@ -242,12 +242,18 @@ public sealed partial class Interpreter
     {
         var lexical = ImmediateVariables(statements).Where(variable => variable.Kind != TokenKind.Var).ToArray();
         var functionDeclarations = statements.OfType<FunctionStmt>().ToArray();
+        var enums = statements.OfType<EnumStmt>().ToArray();
         var varNames = HoistedVariables(statements).Select(variable => variable.Name).ToHashSet(StringComparer.Ordinal);
         var lexicalNames = new HashSet<string>(StringComparer.Ordinal);
         foreach (var variable in lexical)
         {
             if (!lexicalNames.Add(variable.Name) || scope.HasOwn(variable.Name) || varNames.Contains(variable.Name) || parameterScope?.HasOwn(variable.Name) == true)
                 throw new JsSyntaxException($"Identifier '{variable.Name}' has already been declared", variable.Span.Start.Line, variable.Span.Start.Column);
+        }
+        foreach (var declaration in enums)
+        {
+            if (!lexicalNames.Add(declaration.Name) || scope.HasOwn(declaration.Name) || varNames.Contains(declaration.Name) || parameterScope?.HasOwn(declaration.Name) == true)
+                throw new JsSyntaxException($"Identifier '{declaration.Name}' has already been declared", declaration.Span.Start.Line, declaration.Span.Start.Column);
         }
         foreach (var function in functionDeclarations)
         {
@@ -261,6 +267,7 @@ public sealed partial class Interpreter
         }
 
         foreach (var variable in lexical) scope.Create(variable.Name, variable.Kind == TokenKind.Let, lexical: true);
+        foreach (var declaration in enums) scope.Create(declaration.Name, mutable: true, lexical: true);
         if (functionScope)
             foreach (var name in varNames)
                 if (!_varEnv.HasOwn(name)) DeclareVar(_varEnv, name, JsValue.Undefined);
@@ -302,7 +309,8 @@ public sealed partial class Interpreter
         BlockStmt block => ExecuteBlock(block),
         VarStmt variable => Declare(variable),
         VarListStmt list => ExecuteList(list.Declarations),
-        FunctionStmt => JsValue.Undefined,
+        FunctionStmt or TypeAliasStmt or InterfaceStmt => JsValue.Undefined,
+        EnumStmt declaration => ExecuteEnum(declaration),
         ExprStmt expression => Eval(expression.Expression),
         IfStmt branch => Eval(branch.Test).ToBoolean() ? Exec(branch.Then) : branch.Else is null ? JsValue.Undefined : Exec(branch.Else),
         WhileStmt loop => While(loop.Test, loop.Body),
@@ -451,10 +459,12 @@ public sealed partial class Interpreter
             value.Prototype = prototype;
     }
 
-    private JsValue MakeFunction(List<string> parameters, BlockStmt body, EnvironmentRecord closure, string? name = null, bool isMethod = false)
+    private JsValue MakeFunction(List<string> parameters, BlockStmt? body, EnvironmentRecord closure, string? name = null,
+        bool isMethod = false, JsValue? lexicalThis = null, Expr? expressionBody = null)
     {
         if (name is not null) closure = new EnvironmentRecord(closure);
-        var strict = _strict || body.IsStrict;
+        var strict = _strict || body?.IsStrict == true;
+        var constructible = !isMethod && lexicalThis is null;
         var function = new JsFunction((receiver, arguments) =>
         {
             if (_callDepth >= 512) throw new InvalidOperationException("Call depth limit exceeded");
@@ -464,7 +474,7 @@ public sealed partial class Interpreter
             _varEnv = new EnvironmentRecord(closure);
             _env = new EnvironmentRecord(_varEnv);
             _strict = strict;
-            _this = !strict && AbstractOperations.IsNullish(receiver) ? JsValue.From(_globalObject) : receiver;
+            _this = lexicalThis ?? (!strict && AbstractOperations.IsNullish(receiver) ? JsValue.From(_globalObject) : receiver);
             try
             {
                 for (var i = 0; i < parameters.Count; i++)
@@ -473,7 +483,8 @@ public sealed partial class Interpreter
                     if (_varEnv.HasOwn(parameters[i])) _varEnv.Set(parameters[i], value);
                     else _varEnv.Declare(parameters[i], value);
                 }
-                PrepareScope(body.Body, _env, functionScope: true, parameterScope: _varEnv);
+                if (expressionBody is not null) return Eval(expressionBody);
+                PrepareScope(body!.Body, _env, functionScope: true, parameterScope: _varEnv);
                 ExecuteList(body.Body);
                 return JsValue.Undefined;
             }
@@ -483,9 +494,9 @@ public sealed partial class Interpreter
                 (_env, _varEnv, _strict, _this) = previous;
                 _callDepth--;
             }
-        }, parameters.Count) { DefaultConstructionPrototype = isMethod ? null : _objectPrototype };
+        }, parameters.Count) { DefaultConstructionPrototype = constructible ? _objectPrototype : null };
         function.Prototype = _objectPrototype;
-        if (!isMethod)
+        if (constructible)
         {
             var prototype = new JsObject { Prototype = _objectPrototype };
             prototype.DefineOwnProperty("constructor", PropertyDescriptor.Data(JsValue.From(function), writable: true, configurable: true));

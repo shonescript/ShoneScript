@@ -5,10 +5,12 @@ namespace ShoneJS.Parsing;
 
 public enum ParseGoal { Script, Module }
 
-public sealed class Parser(IReadOnlyList<Token> tokens, ParseGoal goal = ParseGoal.Script, bool forceStrict = false)
+public sealed partial class Parser(IReadOnlyList<Token> tokens, ParseGoal goal = ParseGoal.Script, bool forceStrict = false, bool typeScript = false)
 {
     private int _index;
     private int _functionDepth, _loopDepth, _switchDepth;
+    private int _pendingTypeClosers;
+    private List<TypeNode?> _lastParameterTypes = [];
     private bool _strict = forceStrict || goal == ParseGoal.Module;
 
     public bool IsStrict => _strict;
@@ -30,6 +32,14 @@ public sealed class Parser(IReadOnlyList<Token> tokens, ParseGoal goal = ParseGo
 
     public List<Stmt> Parse() => StatementList(TokenKind.End, directives: true);
 
+    public List<Stmt> ParseTypeScript()
+    {
+        if (!typeScript) throw new InvalidOperationException("Parser was not created in TypeScript mode");
+        var statements = StatementList(TokenKind.End, directives: true);
+        if (_pendingTypeClosers != 0) throw Error("Unmatched generic type closer", Current);
+        return statements;
+    }
+
     public Expr ParseExpression()
     {
         var expression = Expression();
@@ -45,7 +55,7 @@ public sealed class Parser(IReadOnlyList<Token> tokens, ParseGoal goal = ParseGo
         while (Current.Kind != end && Current.Kind != TokenKind.End)
         {
             var start = Current;
-            var statement = Statement();
+            var statement = typeScript ? TypeScriptStatement() ?? Statement() : Statement();
             statements.Add(statement);
             if (!directives) continue;
             if (start.Kind != TokenKind.String || statement is not ExprStmt { Expression: LiteralExpr literal } ||
@@ -96,8 +106,16 @@ public sealed class Parser(IReadOnlyList<Token> tokens, ParseGoal goal = ParseGo
                 if (!allowDeclaration && _strict) throw Error("Unexpected function declaration", start);
                 Take();
                 var name = Need(TokenKind.Identifier);
+                var typeParameters = typeScript && Current.Kind == TokenKind.Less ? ParseTypeParameters() : [];
                 var parameters = Parameters();
-                statement = new FunctionStmt(name.Text, parameters.Select(token => token.Text).ToList(), FunctionBody(name, parameters));
+                var parameterTypes = _lastParameterTypes.ToArray();
+                var returnType = typeScript && Match(TokenKind.Colon) ? ParseType() : null;
+                statement = new FunctionStmt(name.Text, parameters.Select(token => token.Text).ToList(), FunctionBody(name, parameters))
+                {
+                    ParameterTypes = parameterTypes,
+                    TypeParameters = typeParameters,
+                    ReturnType = returnType
+                };
                 break;
             case TokenKind.Return:
                 if (_functionDepth == 0) throw Error("Return outside a function", start);
@@ -182,10 +200,12 @@ public sealed class Parser(IReadOnlyList<Token> tokens, ParseGoal goal = ParseGo
             ValidateBinding(name);
             if (start.Kind != TokenKind.Var && !names.Add(name.Text))
                 throw Error("Duplicate lexical declaration", name);
+            var annotation = typeScript && Match(TokenKind.Colon) ? ParseType() : null;
             var init = Match(TokenKind.Equal) ? Expression(1) : null;
             if (start.Kind == TokenKind.Const && init is null) throw Error("const declaration requires an initializer", Current);
             declarations.Add(new VarStmt(start.Kind, name.Text, init)
             {
+                TypeAnnotation = annotation,
                 Span = SpanFrom(declarations.Count == 0 ? start.Start : name.Start)
             });
         } while (Match(TokenKind.Comma));
@@ -196,9 +216,12 @@ public sealed class Parser(IReadOnlyList<Token> tokens, ParseGoal goal = ParseGo
     {
         Need(TokenKind.LeftParen);
         var parameters = new List<Token>();
+        _lastParameterTypes = [];
         while (Current.Kind != TokenKind.RightParen)
         {
             parameters.Add(Need(TokenKind.Identifier));
+            Match(TokenKind.Question);
+            _lastParameterTypes.Add(typeScript && Match(TokenKind.Colon) ? ParseType() : null);
             if (!Match(TokenKind.Comma)) break;
         }
         Need(TokenKind.RightParen);
@@ -337,9 +360,18 @@ public sealed class Parser(IReadOnlyList<Token> tokens, ParseGoal goal = ParseGo
 
     private Expr Expression(int minPrecedence = 0)
     {
+        if (typeScript && minPrecedence <= 1 && Current.Kind is (TokenKind.LeftParen or TokenKind.Less) && TryParenthesizedArrow(out var arrow))
+            return ContinueAfterPostfix(arrow, minPrecedence);
         var left = Primary();
+        if (typeScript && minPrecedence <= 1 && left is IdentifierExpr { IsParenthesized: false } identifier && !LineBreak && Match(TokenKind.Arrow))
+            return ContinueAfterPostfix(ParseArrowBody([new ArrowParameter(identifier.Name)], null, left.Span.Start), minPrecedence);
         while (true)
         {
+            if (typeScript && minPrecedence <= 14 && Current.Kind == TokenKind.Less && TryGenericCall(left, out var genericCall))
+            {
+                left = genericCall;
+                continue;
+            }
             if (minPrecedence <= 14 && Current.Kind == TokenKind.OptionalChain)
             {
                 left = OptionalChain(left);
@@ -353,6 +385,12 @@ public sealed class Parser(IReadOnlyList<Token> tokens, ParseGoal goal = ParseGo
             if (minPrecedence <= 14 && Current.Kind == TokenKind.LeftParen)
             {
                 left = new CallExpr(left, Arguments()) { Span = SpanFrom(left.Span.Start) };
+                continue;
+            }
+            if (typeScript && minPrecedence <= 14 && !LineBreak && Current.Kind == TokenKind.Bang)
+            {
+                Take();
+                left = new NonNullExpr(left) { Span = SpanFrom(left.Span.Start) };
                 continue;
             }
             if (minPrecedence <= 14 && !LineBreak && Current.Kind is TokenKind.PlusPlus or TokenKind.MinusMinus)
@@ -369,6 +407,15 @@ public sealed class Parser(IReadOnlyList<Token> tokens, ParseGoal goal = ParseGo
     {
         while (true)
         {
+            if (typeScript && minPrecedence <= 9 && !LineBreak && Current.Kind == TokenKind.Identifier && Current.Text is "as" or "satisfies")
+            {
+                var keyword = Take();
+                var type = ParseType();
+                left = keyword.Text == "as"
+                    ? new TypeAssertionExpr(left, type) { Span = SpanFrom(left.Span.Start) }
+                    : new SatisfiesExpr(left, type) { Span = SpanFrom(left.Span.Start) };
+                continue;
+            }
             if (minPrecedence <= 2 && Match(TokenKind.Question))
             {
                 var then = Expression(1);
@@ -422,6 +469,7 @@ public sealed class Parser(IReadOnlyList<Token> tokens, ParseGoal goal = ParseGo
             TokenKind.Bang or TokenKind.Minus or TokenKind.Plus or TokenKind.Typeof or TokenKind.Void or TokenKind.Delete or TokenKind.Tilde => Unary(token),
             TokenKind.PlusPlus or TokenKind.MinusMinus => PrefixUpdate(token),
             TokenKind.LeftParen => Group(),
+            TokenKind.Less when typeScript => ParseAngleAssertion(),
             TokenKind.LeftBracket => ArrayLiteral(),
             TokenKind.LeftBrace => ObjectLiteral(),
             TokenKind.Function => FunctionExpression(),
@@ -547,13 +595,19 @@ public sealed class Parser(IReadOnlyList<Token> tokens, ParseGoal goal = ParseGo
             }
             else if (Current.Kind == TokenKind.LeftParen)
             {
+                var typeParameters = typeScript && Current.Kind == TokenKind.Less ? ParseTypeParameters() : [];
                 var parameters = Parameters();
+                var parameterTypes = _lastParameterTypes.ToArray();
+                var returnType = typeScript && Match(TokenKind.Colon) ? ParseType() : null;
                 var body = FunctionBody(null, parameters);
                 if (parameters.Select(parameter => parameter.Text).Distinct(StringComparer.Ordinal).Count() != parameters.Count)
                     throw Error("Duplicate method parameters", key);
                 value = new FunctionExpr(parameters.Select(parameter => parameter.Text).ToList(), body)
                 {
                     IsMethod = true,
+                    ParameterTypes = parameterTypes,
+                    TypeParameters = typeParameters,
+                    ReturnType = returnType,
                     Span = SpanFrom(key.Span.Start)
                 };
             }
@@ -569,8 +623,17 @@ public sealed class Parser(IReadOnlyList<Token> tokens, ParseGoal goal = ParseGo
     private FunctionExpr FunctionExpression()
     {
         Token? name = Current.Kind == TokenKind.Identifier ? Take() : null;
+        var typeParameters = typeScript && Current.Kind == TokenKind.Less ? ParseTypeParameters() : [];
         var parameters = Parameters();
-        return new FunctionExpr(parameters.Select(token => token.Text).ToList(), FunctionBody(name, parameters)) { Name = name?.Text };
+        var parameterTypes = _lastParameterTypes.ToArray();
+        var returnType = typeScript && Match(TokenKind.Colon) ? ParseType() : null;
+        return new FunctionExpr(parameters.Select(token => token.Text).ToList(), FunctionBody(name, parameters))
+        {
+            Name = name?.Text,
+            ParameterTypes = parameterTypes,
+            TypeParameters = typeParameters,
+            ReturnType = returnType
+        };
     }
 
     private NewExpr NewExpression()
@@ -661,7 +724,8 @@ public sealed class Parser(IReadOnlyList<Token> tokens, ParseGoal goal = ParseGo
 
     private bool IsReserved(string identifier) => identifier is "enum" or "class" or "extends" or "super" or
         "import" or "export" or "do" or "with" or "debugger" || goal == ParseGoal.Module && identifier == "await" ||
-        _strict && identifier is "implements" or "interface" or "package" or "private" or "protected" or "public" or "static" or "yield";
+        _strict && identifier is "implements" or "interface" or "package" or "private" or "protected" or "public" or "static" or "yield" &&
+        !(typeScript && identifier is "implements" or "interface" or "private" or "protected" or "public" or "static");
 
     private void ValidateBinding(Token token)
     {
@@ -718,6 +782,9 @@ public sealed class Parser(IReadOnlyList<Token> tokens, ParseGoal goal = ParseGo
     private void ValidateDeclarations(IEnumerable<Stmt> statements, bool functionsAreLexical)
     {
         HashSet<string> lexical = new(StringComparer.Ordinal);
+        if (typeScript)
+            foreach (var enumeration in statements.OfType<EnumStmt>())
+                if (!lexical.Add(enumeration.Name)) throw Error("Duplicate enum declaration", enumeration.Span.Start);
         foreach (var (name, start) in LexicalNames(statements, functionsAreLexical: false))
             if (!lexical.Add(name)) throw Error("Duplicate lexical declaration", start);
         if (functionsAreLexical)

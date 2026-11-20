@@ -12,9 +12,17 @@ public sealed record BlockStmt(List<Stmt> Body) : Stmt
     public bool IsStrict { get; init; }
 }
 
-public sealed record VarStmt(TokenKind Kind, string Name, Expr? Init) : Stmt;
+public sealed record VarStmt(TokenKind Kind, string Name, Expr? Init) : Stmt
+{
+    public TypeNode? TypeAnnotation { get; init; }
+}
 public sealed record VarListStmt(List<VarStmt> Declarations) : Stmt;
-public sealed record FunctionStmt(string Name, List<string> Parameters, BlockStmt Body) : Stmt;
+public sealed record FunctionStmt(string Name, List<string> Parameters, BlockStmt Body) : Stmt
+{
+    public IReadOnlyList<TypeNode?> ParameterTypes { get; init; } = [];
+    public IReadOnlyList<TypeParameter> TypeParameters { get; init; } = [];
+    public TypeNode? ReturnType { get; init; }
+}
 public sealed record ExprStmt(Expr Expression) : Stmt;
 public sealed record IfStmt(Expr Test, Stmt Then, Stmt? Else) : Stmt;
 public sealed record WhileStmt(Expr Test, Stmt Body) : Stmt;
@@ -53,16 +61,28 @@ public sealed record AssignExpr(Expr Target, Expr Value) : Expr;
 public sealed record CompoundAssignExpr(Expr Target, TokenKind Op, Expr Value) : Expr;
 public sealed record UpdateExpr(Expr Target, TokenKind Op, bool Prefix) : Expr;
 public sealed record MemberExpr(Expr Target, Expr Key) : Expr;
-public sealed record CallExpr(Expr Target, List<Expr> Arguments) : Expr;
+public sealed record CallExpr(Expr Target, List<Expr> Arguments) : Expr
+{
+    public IReadOnlyList<TypeNode>? TypeArguments { get; init; }
+}
 public sealed record OptionalChainExpr(Expr Target, IReadOnlyList<OptionalChainSegment> Segments) : Expr;
 public abstract record OptionalChainSegment(bool Optional);
 public sealed record ChainMember(Expr Key, bool Optional) : OptionalChainSegment(Optional);
 public sealed record ChainCall(List<Expr> Arguments, bool Optional) : OptionalChainSegment(Optional);
 public sealed record NewExpr(Expr Target, List<Expr> Arguments) : Expr;
+public sealed record ArrowParameter(string Name, TypeNode? Type = null);
+public sealed record ArrowFunctionExpr(IReadOnlyList<ArrowParameter> Parameters, Expr? ExpressionBody, BlockStmt? BlockBody) : Expr
+{
+    public IReadOnlyList<TypeParameter> TypeParameters { get; init; } = [];
+    public TypeNode? ReturnType { get; init; }
+}
 public sealed record FunctionExpr(List<string> Parameters, BlockStmt Body) : Expr
 {
     public string? Name { get; init; }
     public bool IsMethod { get; init; }
+    public IReadOnlyList<TypeNode?> ParameterTypes { get; init; } = [];
+    public IReadOnlyList<TypeParameter> TypeParameters { get; init; } = [];
+    public TypeNode? ReturnType { get; init; }
 }
 public sealed record ArrayExpr(List<Expr> Items) : Expr;
 public sealed record ArrayHoleExpr : Expr;

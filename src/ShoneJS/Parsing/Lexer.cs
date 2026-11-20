@@ -81,7 +81,7 @@ public sealed class Lexer(string source)
                 '/' => Match('=') ? TokenKind.SlashEqual : TokenKind.Slash,
                 '%' => Match('=') ? TokenKind.PercentEqual : TokenKind.Percent,
                 '!' => Match('=') ? Match('=') ? TokenKind.StrictNotEqual : TokenKind.NotEqual : TokenKind.Bang,
-                '=' => Match('=') ? Match('=') ? TokenKind.StrictEqual : TokenKind.EqualEqual : TokenKind.Equal,
+                '=' => Match('>') ? TokenKind.Arrow : Match('=') ? Match('=') ? TokenKind.StrictEqual : TokenKind.EqualEqual : TokenKind.Equal,
                 '<' => Match('<') ? Match('=') ? TokenKind.ShiftLeftEqual : TokenKind.ShiftLeft : Match('=') ? TokenKind.LessEqual : TokenKind.Less,
                 '>' => ScanGreaterThan(),
                 '&' => Match('&') ? Match('=') ? TokenKind.AndAndEqual : TokenKind.AndAnd : Match('=') ? TokenKind.BitwiseAndEqual : TokenKind.BitwiseAnd,

@@ -1,11 +1,13 @@
 using ShoneJS.Parsing;
 using ShoneJS.Runtime;
+using ShoneJS.TypeScript;
 
 namespace ShoneJS;
 
 public sealed class EngineOptions
 {
     public int MaximumLoopIterations { get; set; } = 1_000_000;
+    public TypeScriptOptions TypeScript { get; set; } = new();
 }
 
 public sealed class ParsedScript
@@ -18,6 +20,12 @@ public sealed class ParsedScript
 
     internal List<Stmt> Statements { get; }
     public bool IsStrict { get; }
+}
+
+public sealed class CheckedTypeScript
+{
+    internal CheckedTypeScript(ParsedScript script) => Script = script;
+    internal ParsedScript Script { get; }
 }
 
 public sealed class Engine
@@ -45,6 +53,24 @@ public sealed class Engine
     }
 
     public JsValue Evaluate(string source) => Execute(ParseScript(source));
+
+    public CheckedTypeScript ParseTypeScript(string source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        var parser = new Parser(new Lexer(source).Scan(), typeScript: true);
+        var statements = parser.ParseTypeScript();
+        var check = new TypeScriptChecker().Check(source, Options.TypeScript);
+        if (!check.Succeeded) throw new TypeScriptCheckException(check.Diagnostics);
+        return new CheckedTypeScript(new ParsedScript(statements, parser.IsStrict));
+    }
+
+    public JsValue ExecuteTypeScript(CheckedTypeScript script)
+    {
+        ArgumentNullException.ThrowIfNull(script);
+        return Execute(script.Script);
+    }
+
+    public JsValue EvaluateTypeScript(string source) => ExecuteTypeScript(ParseTypeScript(source));
 
     public void DrainJobs()
     {

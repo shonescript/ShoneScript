@@ -1,8 +1,12 @@
 using ShoneJS;
 using ShoneJS.Parsing;
 using ShoneJS.Runtime;
+using ShoneJS.TypeScript;
 
-const string usage = "Usage: ShoneJS.Cli [-e <script>]\nWith no arguments, enter one script per line or pipe a complete script to stdin.";
+const string usage = "Usage: ShoneJS.Cli [--ts] [-e <script>]\nPipe a complete script to stdin or use the JavaScript prompt with no arguments.\nTypeScript mode requires SHONEJS_TSGO to point to the native checker.";
+
+var typeScript = args.Length > 0 && args[0] == "--ts";
+if (typeScript) args = args[1..];
 
 if (args is ["-h" or "--help"])
 {
@@ -10,8 +14,13 @@ if (args is ["-h" or "--help"])
     return 0;
 }
 
+var engine = new Engine(new EngineOptions
+{
+    TypeScript = new TypeScriptOptions { ToolPath = Environment.GetEnvironmentVariable("SHONEJS_TSGO") }
+});
+
 if (args is ["-e", var source])
-    return Evaluate(new Engine(), source);
+    return Evaluate(engine, source, typeScript);
 
 if (args.Length != 0)
 {
@@ -19,9 +28,14 @@ if (args.Length != 0)
     return 2;
 }
 
-var engine = new Engine();
 if (Console.IsInputRedirected)
-    return Evaluate(engine, Console.In.ReadToEnd());
+    return Evaluate(engine, Console.In.ReadToEnd(), typeScript);
+
+if (typeScript)
+{
+    Console.Error.WriteLine(usage);
+    return 2;
+}
 
 Console.WriteLine("ShoneJS. Enter one script per line. Type .exit to quit.");
 while (true)
@@ -34,14 +48,19 @@ while (true)
         Evaluate(engine, line);
 }
 
-static int Evaluate(Engine engine, string source)
+static int Evaluate(Engine engine, string source, bool typeScript = false)
 {
     try
     {
-        var result = engine.Evaluate(source);
+        var result = typeScript ? engine.EvaluateTypeScript(source) : engine.Evaluate(source);
         engine.DrainJobs();
         Console.WriteLine(result.ToString());
         return 0;
+    }
+    catch (TypeScriptCheckException error)
+    {
+        foreach (var diagnostic in error.Diagnostics)
+            Console.Error.WriteLine(diagnostic);
     }
     catch (JsSyntaxException error)
     {

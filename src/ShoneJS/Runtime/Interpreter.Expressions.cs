@@ -29,10 +29,15 @@ public sealed partial class Interpreter
         CallExpr call => Call(call.Target, call.Arguments),
         NewExpr call => Construct(call),
         FunctionExpr function => MakeFunction(function.Parameters, function.Body, _env, function.Name, function.IsMethod),
+        ArrowFunctionExpr arrow => MakeFunction(arrow.Parameters.Select(parameter => parameter.Name).ToList(), arrow.BlockBody,
+            _env, lexicalThis: _this, expressionBody: arrow.ExpressionBody),
         ArrayExpr array => MakeArray(array),
         ObjectExpr obj => MakeObject(obj),
         ConditionalExpr condition => Eval(condition.Test).ToBoolean() ? Eval(condition.Then) : Eval(condition.Else),
         SequenceExpr sequence => sequence.Expressions.Aggregate(JsValue.Undefined, (_, item) => Eval(item)),
+        TypeAssertionExpr assertion => Eval(assertion.Expression),
+        SatisfiesExpr satisfies => Eval(satisfies.Expression),
+        NonNullExpr assertion => Eval(assertion.Expression),
         _ => throw new NotSupportedException($"Unsupported expression {expression.GetType().Name}")
     };
 
@@ -52,6 +57,7 @@ public sealed partial class Interpreter
 
     private Reference Resolve(Expr expression)
     {
+        expression = UnwrapTypeExpression(expression);
         if (expression is IdentifierExpr identifier)
         {
             var name = identifier.Name;
@@ -87,7 +93,21 @@ public sealed partial class Interpreter
             () => obj is null || obj.Delete(key), receiver);
     }
 
-    private static bool IsReference(Expr expression) => expression is IdentifierExpr or MemberExpr or OptionalChainExpr;
+    private static bool IsReference(Expr expression) => UnwrapTypeExpression(expression) is IdentifierExpr or MemberExpr or OptionalChainExpr;
+
+    private static Expr UnwrapTypeExpression(Expr expression)
+    {
+        while (true)
+        {
+            switch (expression)
+            {
+                case TypeAssertionExpr assertion: expression = assertion.Expression; break;
+                case SatisfiesExpr satisfies: expression = satisfies.Expression; break;
+                case NonNullExpr assertion: expression = assertion.Expression; break;
+                default: return expression;
+            }
+        }
+    }
 
     private Reference ResolveChain(OptionalChainExpr chain)
     {
@@ -173,7 +193,7 @@ public sealed partial class Interpreter
 
     private JsValue Unary(UnaryExpr unary)
     {
-        if (unary.Op == TokenKind.Typeof && unary.Value is IdentifierExpr id && _env.Resolve(id.Name) is null && !_globalObject.HasProperty(id.Name))
+        if (unary.Op == TokenKind.Typeof && UnwrapTypeExpression(unary.Value) is IdentifierExpr id && _env.Resolve(id.Name) is null && !_globalObject.HasProperty(id.Name))
             return JsValue.From("undefined");
         if (unary.Op == TokenKind.Delete)
         {
