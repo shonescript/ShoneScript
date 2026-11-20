@@ -3,8 +3,11 @@ namespace ShoneJS.Tests;
 public class TypedArrayBuiltinTests
 {
     [Theory]
-    //[InlineData("let a = new Uint8Array([257, -1, 2.5]); a.length === 3 && a[0] === 1 && a[1] === 255 && a[2] === 2")]
+    [InlineData("let a = new Uint8Array([257, -1, 2.5]); a.length === 3 && a[0] === 1 && a[1] === 255 && a[2] === 2")]
     [InlineData("let a = new Int16Array([65535, 2]); a[0] === -1 && a.byteLength === 4 && Int16Array.BYTES_PER_ELEMENT === 2")]
+    [InlineData("let a = new Uint16Array([-2.5, 65537]); a[0] === 65534 && a[1] === 1")]
+    [InlineData("let a = new Uint32Array([-1, 4294967297, Infinity, NaN]); a[0] === 4294967295 && a[1] === 1 && a[2] === 0 && a[3] === 0")]
+    [InlineData("let a = new Int32Array([2147483648, -2147483649]); a[0] === -2147483648 && a[1] === 2147483647")]
     [InlineData("let b = new ArrayBuffer(4); let a = new Uint8Array(b); a[1] = 42; a[1] === 42 && a.buffer === b && a.length === 4")]
     [InlineData("let a = new Uint8Array([1,2,3]); let b = a.toReversed(); b.join() === '3,2,1' && a.join() === '1,2,3'")]
     [InlineData("let a = new Uint8Array([1,2,3]); a.with(1,9).join() === '1,9,3' && a.slice(1).join() === '2,3' && a.at(-1) === 3")]

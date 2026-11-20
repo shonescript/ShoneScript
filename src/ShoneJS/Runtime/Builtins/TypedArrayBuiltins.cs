@@ -79,13 +79,10 @@ public static class TypedArrayBuiltins
             var n = value.ToNumber();
             switch (ElementKind)
             {
-                case Kind.Int8: span[0] = unchecked((byte)(sbyte)ToInteger(n, 8)); break;
-                case Kind.Uint8: span[0] = unchecked((byte)ToInteger(n, 8)); break;
+                case Kind.Int8 or Kind.Uint8: span[0] = (byte)WrapInteger(n, 8); break;
                 case Kind.Uint8Clamped: span[0] = (byte)Math.Clamp(double.IsNaN(n) ? 0 : Math.Round(n, MidpointRounding.ToEven), 0, 255); break;
-                case Kind.Int16: BitConverter.TryWriteBytes(span, unchecked((short)ToInteger(n, 16))); break;
-                case Kind.Uint16: BitConverter.TryWriteBytes(span, unchecked((ushort)ToInteger(n, 16))); break;
-                case Kind.Int32: BitConverter.TryWriteBytes(span, unchecked((int)ToInteger(n, 32))); break;
-                case Kind.Uint32: BitConverter.TryWriteBytes(span, unchecked((uint)ToInteger(n, 32))); break;
+                case Kind.Int16 or Kind.Uint16: BitConverter.TryWriteBytes(span, (ushort)WrapInteger(n, 16)); break;
+                case Kind.Int32 or Kind.Uint32: BitConverter.TryWriteBytes(span, WrapInteger(n, 32)); break;
                 case Kind.Float32: BitConverter.TryWriteBytes(span, (float)n); break;
                 case Kind.Float64: BitConverter.TryWriteBytes(span, n); break;
             }
@@ -204,6 +201,12 @@ public static class TypedArrayBuiltins
     private static ViewObject RequireView(JsValue v)=>v.Data as ViewObject??throw JsException.TypeError("TypedArray method called on incompatible receiver");
     private static double Integer(double n)=>double.IsNaN(n)||n==0?0:Math.Truncate(n);
     private static double Integer(JsValue v)=>Integer(v.ToNumber());
-    private static double ToInteger(double value,int bits) { if(!double.IsFinite(value)||value==0)return 0; var mod=Math.Pow(2,bits); var x=Math.Truncate(value)%mod; if(x<0)x+=mod; return x>=mod/2?x-mod:x; }
+    private static uint WrapInteger(double value, int bits)
+    {
+        if (!double.IsFinite(value)) return 0;
+        double modulus = 1UL << bits;
+        var remainder = Math.Truncate(value) % modulus;
+        return (uint)(remainder < 0 ? remainder + modulus : remainder);
+    }
     private static (int Start,int End) Bounds(int length,JsValue[] a) { var s=(int)Integer(Arg(a,0)); var e=Arg(a,1).Type==JsType.Undefined?length:(int)Integer(Arg(a,1)); return (Math.Clamp(s<0?length+s:s,0,length),Math.Clamp(e<0?length+e:e,0,length)); }
 }
