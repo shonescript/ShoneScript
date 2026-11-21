@@ -11,7 +11,11 @@ public static class TypedArrayBuiltins
     /// <summary>Fixed-size byte storage shared by typed-array views.</summary>
     public sealed class BufferObject : JsObject
     {
-        internal BufferObject(int size) => Bytes = new byte[size];
+        internal BufferObject(int size)
+        {
+            Interpreter.ChargeNativeWork((size + 15L) / 16);
+            Bytes = new byte[size];
+        }
         internal byte[] Bytes { get; }
         public int ByteLength => Bytes.Length;
     }
@@ -133,7 +137,12 @@ public static class TypedArrayBuiltins
         }
         return common;
 
-        ViewObject NewView(Kind kind, int length, JsObject proto) => new(new BufferObject(length * Size(kind)), length, kind, proto);
+        ViewObject NewView(Kind kind, int length, JsObject proto)
+        {
+            var bytes = (long)length * Size(kind);
+            if (bytes > int.MaxValue) throw JsException.RangeError("Invalid typed array length");
+            return new(new BufferObject((int)bytes), length, kind, proto);
+        }
     }
 
     private static JsValue Iterate(JsValue receiver, JsValue[] args, string operation)
@@ -164,6 +173,7 @@ public static class TypedArrayBuiltins
         if (callback is null && comparator.Type != JsType.Undefined)
             throw JsException.TypeError("Comparator must be callable");
 
+        Interpreter.ChargeNativeWork(view.Length);
         var values = Enumerable.Range(0, view.Length).Select(view.Read).ToArray();
         var scratch = new JsValue[values.Length];
         MergeSort(0, values.Length);
@@ -178,8 +188,11 @@ public static class TypedArrayBuiltins
             var left = start;
             var right = middle;
             for (var i = start; i < end; i++)
+            {
+                Interpreter.ChargeNativeWork();
                 scratch[i] = right == end || (left < middle && Compare(values[left], values[right]) <= 0)
                     ? values[left++] : values[right++];
+            }
             Array.Copy(scratch, start, values, start, end - start);
         }
 

@@ -65,6 +65,7 @@ internal static class JsonBuiltins
 
     private static JsValue Revive(JsObject holder, string key, JsFunction reviver, int depth)
     {
+        Interpreter.ChargeNativeWork();
         var value = holder.Get(key);
         if (value.Data is JsObject obj)
         {
@@ -108,6 +109,7 @@ internal static class JsonBuiltins
 
         private JsValue ParseValue(int depth)
         {
+            Interpreter.ChargeNativeWork();
             SkipWhitespace();
             if (_position == text.Length)
                 throw InvalidJson();
@@ -185,7 +187,7 @@ internal static class JsonBuiltins
         private void ReadDigits()
         {
             var start = _position;
-            while (_position < text.Length && char.IsAsciiDigit(text[_position])) _position++;
+            while (_position < text.Length && char.IsAsciiDigit(text[_position])) AdvanceCharacter();
             if (start == _position) throw InvalidJson();
         }
 
@@ -196,7 +198,7 @@ internal static class JsonBuiltins
             StringBuilder? decoded = null;
             while (_position < text.Length)
             {
-                var character = text[_position++];
+                var character = AdvanceCharacter();
                 if (character == '"')
                 {
                     if (decoded is null) return text[start..(_position - 1)];
@@ -240,7 +242,13 @@ internal static class JsonBuiltins
 
         private void SkipWhitespace()
         {
-            while (_position < text.Length && text[_position] is ' ' or '\t' or '\r' or '\n') _position++;
+            while (_position < text.Length && text[_position] is ' ' or '\t' or '\r' or '\n') AdvanceCharacter();
+        }
+
+        private char AdvanceCharacter()
+        {
+            if ((_position & 63) == 0) Interpreter.ChargeNativeWork();
+            return text[_position++];
         }
 
         private bool Consume(char character)
@@ -284,6 +292,7 @@ internal static class JsonBuiltins
             var seen = new HashSet<string>(StringComparer.Ordinal);
             for (long index = 0; index < length; index++)
             {
+                Interpreter.ChargeNativeWork();
                 var item = obj.Get(IndexKey(index));
                 if (item.Type is not (JsType.String or JsType.Number)) continue;
                 var key = item.ToJsString();
@@ -294,6 +303,7 @@ internal static class JsonBuiltins
 
         private bool WriteProperty(JsObject holder, string key, int depth)
         {
+            Interpreter.ChargeNativeWork();
             var value = holder.Get(key);
             var keyValue = JsValue.From(key);
             if (value.Data is JsObject obj && obj.Get("toJSON").Data is JsFunction toJson)
@@ -382,6 +392,7 @@ internal static class JsonBuiltins
             _output.Append('"');
             for (var index = 0; index < text.Length; index++)
             {
+                if ((index & 63) == 0) Interpreter.ChargeNativeWork();
                 var character = text[index];
                 switch (character)
                 {

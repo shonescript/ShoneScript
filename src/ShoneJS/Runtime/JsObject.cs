@@ -253,6 +253,13 @@ public sealed class JsFunction : JsObject
         DefineOwnProperty("length", PropertyDescriptor.Data(JsValue.From((double)arity), configurable: true));
     }
 
+    public JsFunction(Func<JsValue, JsValue[], JsValue> call, int arity, Func<JsValue[], JsValue> construct)
+        : this(call, arity)
+    {
+        ArgumentNullException.ThrowIfNull(construct);
+        NativeConstruct = construct;
+    }
+
     public int Arity { get; }
     internal Func<JsValue[], JsValue>? NativeConstruct { get; init; }
     internal JsObject? DefaultConstructionPrototype { get; init; }

@@ -8,10 +8,13 @@ namespace ShoneJs.Parsing;
 
 public enum ParseGoal { Script, Module }
 
-public sealed partial class Parser(IReadOnlyList<Token> tokens, ParseGoal goal = ParseGoal.Script, bool forceStrict = false, bool typeScript = false)
+public sealed partial class Parser(IReadOnlyList<Token> tokens, ParseGoal goal = ParseGoal.Script, bool forceStrict = false,
+    bool typeScript = false, CancellationToken cancellationToken = default)
 {
     private int _index;
-    private int _functionDepth, _loopDepth, _switchDepth;
+    private int _functionDepth, _loopDepth, _switchDepth, _parseDepth;
+    private bool _asyncFunction;
+    private bool AllowAwait => _asyncFunction || goal == ParseGoal.Module && _functionDepth == 0;
     private int _pendingTypeClosers;
     private List<TypeNode?> _lastParameterTypes = [];
     private bool _strict = forceStrict || goal == ParseGoal.Module;
@@ -22,7 +25,18 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, ParseGoal goal =
     private Token Current => tokens[Math.Min(_index, tokens.Count - 1)];
     private Token Previous => tokens[_index - 1];
     private bool LineBreak => Current.HasLineTerminatorBefore || _index > 0 && Previous.End.Line < Current.Line;
-    private Token Take() => tokens[_index++];
+    private Token Take()
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return tokens[_index++];
+    }
+
+    private void EnterParse()
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (_parseDepth >= 256) throw Error("Syntax nesting limit exceeded", Current);
+        _parseDepth++;
+    }
 
     private bool Match(TokenKind kind)
     {
@@ -34,7 +48,11 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, ParseGoal goal =
     private Token Need(TokenKind kind) => Current.Kind == kind ? Take() : throw Error($"Expected {kind}", Current);
 
     // Parse a complete JavaScript script/module. Module goal is strict by definition.
-    public List<Stmt> Parse() => StatementList(TokenKind.End, directives: true);
+    public List<Stmt> Parse()
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return goal == ParseGoal.Module ? ParseModule().Statements : StatementList(TokenKind.End, directives: true);
+    }
 
     // TypeScript declarations are accepted only through this explicit entrypoint/mode.
     public List<Stmt> ParseTypeScript()
@@ -93,6 +111,16 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, ParseGoal goal =
 
     private Stmt Statement(bool allowDeclaration = true)
     {
+        EnterParse();
+        try { return StatementCore(allowDeclaration); }
+        finally { _parseDepth--; }
+    }
+
+    private bool AsyncFunctionAhead => Current.Kind == TokenKind.Identifier && Current.Text == "async" &&
+        PeekToken(1).Kind == TokenKind.Function && !PeekToken(1).HasLineTerminatorBefore;
+
+    private Stmt StatementCore(bool allowDeclaration)
+    {
         var start = Current;
         Stmt statement;
         switch (start.Kind)
@@ -112,19 +140,9 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, ParseGoal goal =
                 Semicolon();
                 break;
             case TokenKind.Function:
+            case TokenKind.Identifier when AsyncFunctionAhead:
                 if (!allowDeclaration && _strict) throw Error("Unexpected function declaration", start);
-                Take();
-                var name = Need(TokenKind.Identifier);
-                var typeParameters = typeScript && Current.Kind == TokenKind.Less ? ParseTypeParameters() : [];
-                var parameters = Parameters();
-                var parameterTypes = _lastParameterTypes.ToArray();
-                var returnType = typeScript && Match(TokenKind.Colon) ? ParseType() : null;
-                statement = new FunctionStmt(name.Text, parameters.Select(token => token.Text).ToList(), FunctionBody(name, parameters))
-                {
-                    ParameterTypes = parameterTypes,
-                    TypeParameters = typeParameters,
-                    ReturnType = returnType
-                };
+                statement = FunctionDeclaration();
                 break;
             case TokenKind.Return:
                 if (_functionDepth == 0) throw Error("Return outside a function", start);
@@ -237,8 +255,31 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, ParseGoal goal =
         return parameters;
     }
 
-    private BlockStmt FunctionBody(Token? name, List<Token> parameters)
+    private FunctionStmt FunctionDeclaration(string? anonymousName = null)
     {
+        var start = Current.Start;
+        var isAsync = AsyncFunctionAhead;
+        if (isAsync) Take();
+        Need(TokenKind.Function);
+        Token? name = anonymousName is not null && Current.Kind == TokenKind.LeftParen ? null : Need(TokenKind.Identifier);
+        var typeParameters = typeScript && Current.Kind == TokenKind.Less ? ParseTypeParameters() : [];
+        var parameters = Parameters();
+        var parameterTypes = _lastParameterTypes.ToArray();
+        var returnType = typeScript && Match(TokenKind.Colon) ? ParseType() : null;
+        return new FunctionStmt(name?.Text ?? anonymousName!, parameters.Select(token => token.Text).ToList(), FunctionBody(name, parameters, isAsync))
+        {
+            IsAsync = isAsync,
+            ParameterTypes = parameterTypes,
+            TypeParameters = typeParameters,
+            ReturnType = returnType,
+            Span = SpanFrom(start)
+        };
+    }
+
+    private BlockStmt FunctionBody(Token? name, List<Token> parameters, bool isAsync = false)
+    {
+        var outerAsync = _asyncFunction;
+        _asyncFunction = isAsync;
         var outerStrict = _strict;
         var outerLoopDepth = _loopDepth;
         var outerSwitchDepth = _switchDepth;
@@ -264,6 +305,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, ParseGoal goal =
         finally
         {
             _strict = outerStrict;
+            _asyncFunction = outerAsync;
             _loopDepth = outerLoopDepth;
             _switchDepth = outerSwitchDepth;
             _functionDepth--;
@@ -369,11 +411,15 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, ParseGoal goal =
 
     private Expr Expression(int minPrecedence = 0)
     {
-        if (typeScript && minPrecedence <= 1 && Current.Kind is (TokenKind.LeftParen or TokenKind.Less) && TryParenthesizedArrow(out var arrow))
-            return ContinueAfterPostfix(arrow, minPrecedence);
+        EnterParse();
+        try { return ExpressionCore(minPrecedence); }
+        finally { _parseDepth--; }
+    }
+
+    private Expr ExpressionCore(int minPrecedence)
+    {
+        if (minPrecedence <= 1 && TryArrow(out var arrow)) return ContinueAfterPostfix(arrow, minPrecedence);
         var left = Primary();
-        if (typeScript && minPrecedence <= 1 && left is IdentifierExpr { IsParenthesized: false } identifier && !LineBreak && Match(TokenKind.Arrow))
-            return ContinueAfterPostfix(ParseArrowBody([new ArrowParameter(identifier.Name)], null, left.Span.Start), minPrecedence);
         while (true)
         {
             if (typeScript && minPrecedence <= 14 && Current.Kind == TokenKind.Less && TryGenericCall(left, out var genericCall))
@@ -475,6 +521,9 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, ParseGoal goal =
             TokenKind.True => new LiteralExpr(true),
             TokenKind.False => new LiteralExpr(false),
             TokenKind.Null => new LiteralExpr(null),
+            TokenKind.Identifier when token.Text == "async" && Current.Kind == TokenKind.Function && !LineBreak => AsyncFunctionExpression(),
+            TokenKind.Identifier when token.Text == "await" && AllowAwait => new AwaitExpr(Expression(14)),
+            TokenKind.Identifier when token.Text == "import" && goal == ParseGoal.Module && Match(TokenKind.Dot) => ParseImportMeta(),
             TokenKind.Identifier or TokenKind.Undefined => Identifier(token),
             TokenKind.This => new ThisExpr(),
             TokenKind.Bang or TokenKind.Minus or TokenKind.Plus or TokenKind.Typeof or TokenKind.Void or TokenKind.Delete or TokenKind.Tilde => Unary(token),
@@ -592,6 +641,9 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, ParseGoal goal =
             var key = Take();
             if (!IsIdentifierName(key) && key.Kind is not (TokenKind.Number or TokenKind.String))
                 throw Error("Expected property name", key);
+            var isAsyncMethod = key.Kind == TokenKind.Identifier && key.Text == "async" && !LineBreak &&
+                (IsIdentifierName(Current) || Current.Kind is TokenKind.String or TokenKind.Number) && PeekToken(1).Kind == TokenKind.LeftParen;
+            if (isAsyncMethod) key = Take();
             if (key.Kind == TokenKind.String) ValidateString(key);
             var name = key.Kind == TokenKind.Number ? Number(key).ToString("G", CultureInfo.InvariantCulture) : key.Text;
             Expr value;
@@ -610,12 +662,13 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, ParseGoal goal =
                 var parameters = Parameters();
                 var parameterTypes = _lastParameterTypes.ToArray();
                 var returnType = typeScript && Match(TokenKind.Colon) ? ParseType() : null;
-                var body = FunctionBody(null, parameters);
+                var body = FunctionBody(null, parameters, isAsyncMethod);
                 if (parameters.Select(parameter => parameter.Text).Distinct(StringComparer.Ordinal).Count() != parameters.Count)
                     throw Error("Duplicate method parameters", key);
                 value = new FunctionExpr(parameters.Select(parameter => parameter.Text).ToList(), body)
                 {
                     IsMethod = true,
+                    IsAsync = isAsyncMethod,
                     ParameterTypes = parameterTypes,
                     TypeParameters = typeParameters,
                     ReturnType = returnType,
@@ -631,15 +684,22 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, ParseGoal goal =
         return new ObjectExpr(properties);
     }
 
-    private FunctionExpr FunctionExpression()
+    private FunctionExpr AsyncFunctionExpression()
+    {
+        Need(TokenKind.Function);
+        return FunctionExpression(isAsync: true);
+    }
+
+    private FunctionExpr FunctionExpression(bool isAsync = false)
     {
         Token? name = Current.Kind == TokenKind.Identifier ? Take() : null;
         var typeParameters = typeScript && Current.Kind == TokenKind.Less ? ParseTypeParameters() : [];
         var parameters = Parameters();
         var parameterTypes = _lastParameterTypes.ToArray();
         var returnType = typeScript && Match(TokenKind.Colon) ? ParseType() : null;
-        return new FunctionExpr(parameters.Select(token => token.Text).ToList(), FunctionBody(name, parameters))
+        return new FunctionExpr(parameters.Select(token => token.Text).ToList(), FunctionBody(name, parameters, isAsync))
         {
+            IsAsync = isAsync,
             Name = name?.Text,
             ParameterTypes = parameterTypes,
             TypeParameters = typeParameters,
@@ -716,7 +776,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, ParseGoal goal =
         throw Error("Invalid numeric literal", token);
     }
 
-    private static BigInt Integer(string text, bool legacyOctal = false)
+    private BigInt Integer(string text, bool legacyOctal = false)
     {
         var radix = legacyOctal ? 8 : 10;
         var start = 0;
@@ -728,6 +788,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, ParseGoal goal =
         BigInt result = 0;
         foreach (var digit in text.AsSpan(start))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (digit == '_') continue;
             var value = char.IsAsciiDigit(digit) ? digit - '0' : char.ToLowerInvariant(digit) - 'a' + 10;
             result = result * radix + value;
@@ -736,7 +797,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, ParseGoal goal =
     }
 
     private bool IsReserved(string identifier) => identifier is "enum" or "class" or "extends" or "super" or
-        "import" or "export" or "do" or "with" or "debugger" || goal == ParseGoal.Module && identifier == "await" ||
+        "import" or "export" or "do" or "with" or "debugger" || (goal == ParseGoal.Module || _asyncFunction) && identifier == "await" ||
         _strict && identifier is "implements" or "interface" or "package" or "private" or "protected" or "public" or "static" or "yield" &&
         !(typeScript && identifier is "implements" or "interface" or "private" or "protected" or "public" or "static");
 

@@ -251,6 +251,182 @@ public sealed class HtmlLayoutTests(ITestOutputHelper output)
         output.WriteLine($"Text measurement calls: {firstMeasureCount} on first layout, {calls.Values.Sum() - firstMeasureCount} on repeated layouts");
     }
 
+    [Fact]
+    public void LinkedSheetsCascadeInDomOrderAndReevaluateViewportQueries()
+    {
+        var page = HtmlPage.Parse("""
+            <style>.target { color: red; }</style>
+            <link id="external" rel="STYLEsheet" href="theme.css" media="screen">
+            <style>.target { font-weight: normal; } @media print { .target { color: black !important; } }</style>
+            <main class="target" style="color: green">Target</main>
+            """);
+        string? External(IElement link) => link.Id == "external" ? """
+            .target { color: blue !important; font-weight: bold; }
+            @media print, (max-width: 400px) and (orientation: portrait) {
+                .target { color: purple !important; }
+                @media (min-height: 500px) { .target { font-size: 24px; } }
+            }
+            """ : null;
+        var layout = new HtmlLayout();
+        HtmlDrawItem Target(double width, double height) => TextItem(layout.Get(page.Document, page.Version, width, Measure,
+            viewportHeight: height, externalStyleSheet: External), "Target");
+
+        var wide = Target(600, 700);
+        Assert.Equal(Color.FromRgb(0, 0, 255), wide.TextStyle.Color);
+        Assert.False(wide.TextStyle.Bold);
+        Assert.Equal(16, wide.TextStyle.FontSize);
+        var narrow = Target(400, 600);
+        Assert.Equal(Color.FromRgb(128, 0, 128), narrow.TextStyle.Color);
+        Assert.Equal(24, narrow.TextStyle.FontSize);
+        Assert.Equal(Color.FromRgb(0, 0, 255), Target(400, 300).TextStyle.Color);
+    }
+
+    [Fact]
+    public void CombinatorsAttributesAndLiveControlStatesMatch()
+    {
+        var page = HtmlPage.Parse("""
+            <style>
+              body { margin: 0; }
+              fieldset > input[type='checkbox']:checked + label[data-word~='one'] { color: red; }
+              fieldset input:disabled ~ label[data-word^='ONE' i][data-end$='tail'] { font-weight: bold; }
+              fieldset:focus-within > label[data-language|='en'] { font-style: italic; }
+              fieldset > label[data-other*=','] { font-size: 20px; }
+              input:enabled:focus { width: 30px; }
+              input:enabled:hover:active { height: 20px; }
+            </style>
+            <fieldset disabled><input id="check" type="CHECKBOX" checked>
+              <label data-word="one two">Adjacent</label>
+              <section><label data-word="one">Nested</label></section>
+              <label data-word="one-two" data-end="detail" data-language="en-US" data-other="a,b">Sibling</label>
+            </fieldset>
+            <input id="focus" type="checkbox"><fieldset><legend><input id="legend"></legend></fieldset>
+            """);
+        var layout = new HtmlLayout();
+        var focus = page.Document.GetElementById("focus");
+        var first = layout.Get(page.Document, page.Version, 400, Measure);
+        Assert.Equal(Color.FromRgb(255, 0, 0), TextItem(first, "Adjacent").TextStyle.Color);
+        Assert.Equal(HtmlTextStyle.Default, TextItem(first, "Nested").TextStyle);
+        Assert.True(TextItem(first, "Sibling").TextStyle.Bold);
+        Assert.Equal(20, TextItem(first, "Sibling").TextStyle.FontSize);
+        Assert.False(TextItem(first, "Sibling").TextStyle.Italic);
+        Assert.Equal(18, Box(first, "focus").ControlBounds!.Value.Width);
+
+        var focused = layout.Get(page.Document, page.Version, 400, Measure,
+            focusedElement: focus, hoveredElement: focus, activeElement: focus);
+        Assert.Equal(30, Box(focused, "focus").ControlBounds!.Value.Width);
+        Assert.Equal(20, Box(focused, "focus").ControlBounds!.Value.Height);
+        var within = layout.Get(page.Document, page.Version, 400, Measure, focusedElement: page.Document.GetElementById("check"));
+        Assert.True(TextItem(within, "Sibling").TextStyle.Italic);
+    }
+
+    [Fact]
+    public void ImagesRespectIntrinsicAspectRatioCssAndAlternativeText()
+    {
+        var page = HtmlPage.Parse("""
+            <style>body { margin: 0; } img { display: block; } #loaded { max-width: 50%; padding: 2px; border: 1px solid; }</style>
+            <img id="loaded" alt="Image" width="160"><img id="missing" alt="Fallback" width="100" height="24">
+            <img id="empty" alt="" width="80" height="10">
+            """);
+        static Size? Intrinsic(IElement img) => img.Id == "loaded" ? new(200, 100) : null;
+        var result = new HtmlLayout().Get(page.Document, page.Version, 200, Measure, imageSize: Intrinsic);
+        var loaded = Box(result, "loaded");
+        Assert.Equal(new Rect(0, 0, 106, 56), loaded.Bounds);
+        Assert.Equal(new Rect(3, 3, 100, 50), loaded.ImageBounds);
+        Assert.DoesNotContain(result.Items, item => item.Text == "Image");
+        var missing = Box(result, "missing");
+        Assert.Equal(new Rect(0, 56, 100, 24), missing.Bounds);
+        Assert.Null(missing.ImageBounds);
+        Assert.Same(missing.Element, TextItem(result, "Fallback").Element);
+        Assert.Equal(new Rect(0, 80, 80, 10), Box(result, "empty").Bounds);
+        Assert.Same(loaded.Element, result.HitTest(102, 52));
+    }
+
+    [Fact]
+    public void AutoMarginsCenterWidthConstrainedBlocks()
+    {
+        var page = HtmlPage.Parse("""
+            <style>body { margin:0; } main { margin:0 auto; max-width:200px; height:20px; }</style>
+            <main id="frame"></main>
+            """);
+        var layout = new HtmlLayout();
+        Assert.Equal(new Rect(50, 0, 200, 20), Box(layout.Get(page.Document, page.Version, 300, Measure), "frame").Bounds);
+        Assert.Equal(new Rect(0, 0, 180, 20), Box(layout.Get(page.Document, page.Version, 180, Measure), "frame").Bounds);
+    }
+
+    [Fact]
+    public void FlexLaysOutGrowthGapsWrappingAndAlignment()
+    {
+        var page = HtmlPage.Parse("""
+            <style>
+              body { margin: 0; }
+              #grow { display: flex; width: 200px; height: 50px; gap: 10px; align-items: center; }
+              #one { flex: 1 0 40px; height: 20px; }
+              #two { flex: 2 0 30px; height: 30px; }
+              #wrap { display: flex; flex-flow: row wrap; width: 100px; gap: 5px; }
+              #wrap > div { flex: 0 0 45px; height: 20px; }
+            </style>
+            <div id="grow"><div id="one"></div><div id="two"></div></div>
+            <div id="wrap"><div id="a"></div><div id="b"></div><div id="c"></div></div>
+            """);
+        var result = new HtmlLayout().Get(page.Document, page.Version, 240, Measure);
+        Assert.Equal(new Rect(0, 15, 80, 20), Box(result, "one").Bounds);
+        Assert.Equal(new Rect(90, 10, 110, 30), Box(result, "two").Bounds);
+        Assert.Equal(new Rect(0, 50, 45, 20), Box(result, "a").Bounds);
+        Assert.Equal(new Rect(50, 50, 45, 20), Box(result, "b").Bounds);
+        Assert.Equal(new Rect(0, 75, 45, 20), Box(result, "c").Bounds);
+        Assert.Equal(95, result.Height);
+    }
+
+    [Fact]
+    public void GridLaysOutFractionalTracksAutoRowsAndSpans()
+    {
+        var page = HtmlPage.Parse("""
+            <style>
+              body { margin: 0; }
+              #grid { display:grid; width: 260px; grid-template-columns: 60px repeat(2, minmax(0, 1fr)); gap: 5px 10px; }
+              #span { grid-column: 2 / span 2; grid-row: 1; height: 20px; }
+              #long { grid-column: span 2; height: 30px; }
+              #first { height: 10px; }
+              #last { height: 15px; }
+            </style>
+            <section id="grid"><div id="first"></div><div id="span"></div><div id="long"></div><div id="last"></div></section>
+            """);
+        var result = new HtmlLayout().Get(page.Document, page.Version, 300, Measure);
+        Assert.Equal(new Rect(0, 0, 60, 10), Box(result, "first").Bounds);
+        Assert.Equal(new Rect(70, 0, 190, 20), Box(result, "span").Bounds);
+        Assert.Equal(new Rect(0, 25, 160, 30), Box(result, "long").Bounds);
+        Assert.Equal(new Rect(170, 25, 90, 15), Box(result, "last").Bounds);
+    }
+
+    [Fact]
+    public void PositionedBoxesUseContainingBlockAndFixedBoxesFollowViewport()
+    {
+        var page = HtmlPage.Parse("""
+            <style>body { margin: 0; }</style>
+            <div id="relative" style="position:relative; left:8px; top:5px; width:90px; height:60px; border:2px solid red">
+              <div id="bottom" style="position:absolute; right:4px; bottom:6px; width:20px; height:10px"></div>
+              <div id="high" style="position:absolute; z-index:4; inset: 2px auto auto 4px; width:20px; height:12px"></div>
+              <div id="low" style="position:absolute; z-index:1; top:2px; left:4px; width:18px; height:10px"></div>
+            </div>
+            <div id="normal" style="height: 236px"></div>
+            <div id="fixed" style="position:fixed; right:10px; bottom:10px; width:30px; height:20px"></div>
+            """);
+        var result = new HtmlLayout().Get(page.Document, page.Version, 120, Measure, viewportHeight: 90);
+        Assert.Equal(new Rect(8, 5, 94, 64), Box(result, "relative").Bounds);
+        Assert.Equal(new Rect(76, 51, 20, 10), Box(result, "bottom").Bounds);
+        Assert.Equal(64, Box(result, "normal").Bounds.Y);
+        Assert.Equal(300, result.Height);
+        Assert.Same(Box(result, "high").Element, result.HitTest(15, 10));
+        var fixedBox = Box(result, "fixed");
+        Assert.True(fixedBox.Fixed);
+        Assert.Equal(new Rect(80, 60, 30, 20), fixedBox.Bounds);
+        Assert.Same(fixedBox.Element, result.HitTest(85, 265, scrollOffset: 200));
+        Assert.Contains(fixedBox, result.GetVisibleItems(200, 290, scrollOffset: 200));
+    }
+
+    private static HtmlDrawItem Box(HtmlLayoutResult result, string id) =>
+        Assert.Single(result.Items, item => item.Element.Id == id && item.Text is null);
+
     private static HtmlDrawItem TextItem(HtmlLayoutResult result, string text) =>
         Assert.Single(result.Items, item => string.Equals(item.Text?.Trim(), text, StringComparison.Ordinal));
 

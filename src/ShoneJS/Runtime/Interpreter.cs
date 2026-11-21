@@ -18,9 +18,14 @@ public sealed partial class Interpreter
     private EnvironmentRecord _varEnv;
     private bool _strict;
     private JsValue _this;
-    private int _remainingIterations;
-    private int _callDepth;
-    private int _scriptDepth;
+    [ThreadStatic]
+    private static Interpreter? _executingInterpreter;
+    private int _remainingIterations, _remainingSteps;
+    private int _callDepth, _executionDepth;
+    private CancellationToken _operationCancellation;
+    internal CancellationToken CancellationToken { get; set; }
+    internal int MaximumExecutionSteps { get; set; } = 10_000_000;
+    internal int MaximumPendingJobs { get => _promises.MaximumPendingJobs; set => _promises.MaximumPendingJobs = value; }
     /// <summary>Maximum loop and queued-job steps permitted by one script execution.</summary>
     public int MaximumLoopIterations { get; set; } = 1_000_000;
 
@@ -87,7 +92,7 @@ public sealed partial class Interpreter
             prototype.Set("constructor", JsValue.From(constructor));
             SetGlobal(name, JsValue.From(constructor));
         }
-        _promises = new Builtins.PromiseBuiltins(_objectPrototype, _arrayPrototype, AttachErrorPrototype);
+        _promises = new Builtins.PromiseBuiltins(_objectPrototype, _arrayPrototype, AttachErrorPrototype, ConsumeStep);
         _promises.Install(SetGlobal);
     }
 
@@ -119,13 +124,73 @@ public sealed partial class Interpreter
     }
 
     /// <summary>Runs pending promise jobs synchronously, subject to the execution iteration limit.</summary>
-    public void DrainJobs()
+    public void DrainJobs() => RunGuarded(() => { _promises.DrainJobs(ConsumeIteration); return JsValue.Undefined; });
+
+    internal JsValue RunGuarded(Func<JsValue> run, CancellationToken cancellationToken = default)
     {
-        var remaining = _remainingIterations;
-        if (_scriptDepth == 0) _remainingIterations = MaximumLoopIterations;
-        _scriptDepth++;
-        try { _promises.DrainJobs(ConsumeIteration); }
-        finally { _scriptDepth--; _remainingIterations = remaining; }
+        var previous = _operationCancellation;
+        var previousInterpreter = _executingInterpreter;
+        CancellationTokenSource? linked = null;
+        if (_executionDepth == 0)
+        {
+            _remainingSteps = MaximumExecutionSteps;
+            _remainingIterations = MaximumLoopIterations;
+        }
+        if (cancellationToken.CanBeCanceled && previous.CanBeCanceled && cancellationToken != previous)
+            linked = CancellationTokenSource.CreateLinkedTokenSource(previous, cancellationToken);
+        _operationCancellation = linked?.Token ?? (cancellationToken.CanBeCanceled ? cancellationToken : previous);
+        _executionDepth++;
+        _executingInterpreter = this;
+        try
+        {
+            CheckCancellation();
+            return run();
+        }
+        finally
+        {
+            _executionDepth--;
+            _executingInterpreter = previousInterpreter;
+            _operationCancellation = previous;
+            linked?.Dispose();
+        }
+    }
+
+    private void CheckCancellation()
+    {
+        CancellationToken.ThrowIfCancellationRequested();
+        _operationCancellation.ThrowIfCancellationRequested();
+    }
+
+    private void ConsumeStep()
+    {
+        CheckCancellation();
+        if (!System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack())
+            throw new InvalidOperationException("Execution nesting limit exceeded");
+        if (_executionDepth > 0 && _remainingSteps-- <= 0) throw new InvalidOperationException("Execution step limit exceeded");
+    }
+
+    // Some native methods can do large amounts of work without evaluating an AST node.
+    internal static void ChargeNativeWork(long work = 1)
+    {
+        if (_executingInterpreter is not { } engine) return;
+        engine.CheckCancellation();
+        if (work > engine._remainingSteps) throw new InvalidOperationException("Execution step limit exceeded");
+        engine._remainingSteps -= (int)work;
+    }
+
+    internal JsValue CreatePromise(out Action<JsValue> resolve, out Action<JsValue> reject)
+    {
+        CheckCancellation();
+        var promise = _promises.Create(out var fulfill, out var fail);
+        resolve = value => RunGuarded(() => { fulfill(value); return JsValue.Undefined; });
+        reject = value => RunGuarded(() => { fail(value); return JsValue.Undefined; });
+        return promise;
+    }
+
+    internal void EnqueueMicrotask(Action callback)
+    {
+        CheckCancellation();
+        _promises.Enqueue(callback);
     }
 
     private static JsValue NarrowBigInt(JsValue[] args, bool signed)
@@ -185,14 +250,15 @@ public sealed partial class Interpreter
     /// <summary>Executes parsed statements as a non-strict script and returns its completion value.</summary>
     public JsValue Execute(List<Stmt> statements) => Execute(statements, false);
 
-    internal JsValue Execute(List<Stmt> statements, bool strict)
+    internal JsValue Execute(List<Stmt> statements, bool strict) => RunGuarded(() => ExecuteScript(statements, strict));
+
+    private JsValue ExecuteScript(List<Stmt> statements, bool strict)
     {
-        var previous = (_env, _varEnv, _strict, _this, _remainingIterations);
+        var previous = CaptureContext();
         _env = _varEnv = _global;
         _strict = strict;
         _this = JsValue.From(_globalObject);
-        _remainingIterations = MaximumLoopIterations;
-        _scriptDepth++;
+        _activeModule = null;
         try
         {
             PrepareScope(statements, _env, functionScope: true);
@@ -205,8 +271,7 @@ public sealed partial class Interpreter
         }
         finally
         {
-            (_env, _varEnv, _strict, _this, _remainingIterations) = previous;
-            _scriptDepth--;
+            RestoreContext(previous);
         }
     }
 
@@ -228,10 +293,11 @@ public sealed partial class Interpreter
         _ => Enumerable.Empty<VarStmt>()
     });
 
-    private static IEnumerable<VarStmt> HoistedVariables(IEnumerable<Stmt> statements)
+    private IEnumerable<VarStmt> HoistedVariables(IEnumerable<Stmt> statements)
     {
         foreach (var statement in statements)
         {
+            ConsumeStep();
             var variables = statement switch
             {
                 VarStmt { Kind: TokenKind.Var } variable => [variable],
@@ -285,7 +351,7 @@ public sealed partial class Interpreter
 
         foreach (var function in functionDeclarations)
         {
-            var value = MakeFunction(function.Parameters, function.Body, scope);
+            var value = MakeFunction(function.Parameters, function.Body, scope, isAsync: function.IsAsync);
             var target = functionScope ? _varEnv : scope;
             if (target.HasOwn(function.Name)) WriteBinding(target, function.Name, value);
             else if (functionScope) DeclareVar(target, function.Name, value);
@@ -315,7 +381,13 @@ public sealed partial class Interpreter
         target.Set(name, value);
     }
 
-    private JsValue Exec(Stmt statement) => statement switch
+    private JsValue Exec(Stmt statement)
+    {
+        ConsumeStep();
+        return ExecCore(statement);
+    }
+
+    private JsValue ExecCore(Stmt statement) => statement switch
     {
         BlockStmt block => ExecuteBlock(block),
         VarStmt variable => Declare(variable),
@@ -360,6 +432,7 @@ public sealed partial class Interpreter
 
     private void ConsumeIteration()
     {
+        ConsumeStep();
         if (_remainingIterations <= 0) throw new InvalidOperationException("Execution limit exceeded");
         _remainingIterations--;
     }
@@ -445,6 +518,7 @@ public sealed partial class Interpreter
 
     private JsValue Try(TryStmt attempt)
     {
+        var abruptHostExit = false;
         try { return ExecuteBlock(attempt.Body); }
         catch (JsException error) when (attempt.CatchBody is not null)
         {
@@ -458,9 +532,14 @@ public sealed partial class Interpreter
             }
             finally { _env = previous; }
         }
+        catch (Exception error) when (error is not (JsException or ReturnSignal or BreakSignal or ContinueSignal))
+        {
+            abruptHostExit = true;
+            throw;
+        }
         finally
         {
-            if (attempt.FinallyBody is not null) ExecuteBlock(attempt.FinallyBody);
+            if (!abruptHostExit && attempt.FinallyBody is not null) ExecuteBlock(attempt.FinallyBody);
         }
     }
 
@@ -471,29 +550,27 @@ public sealed partial class Interpreter
     }
 
     private JsValue MakeFunction(List<string> parameters, BlockStmt? body, EnvironmentRecord closure, string? name = null,
-        bool isMethod = false, JsValue? lexicalThis = null, Expr? expressionBody = null)
+        bool isMethod = false, JsValue? lexicalThis = null, Expr? expressionBody = null, bool isAsync = false)
     {
         if (name is not null) closure = new EnvironmentRecord(closure);
         var strict = _strict || body?.IsStrict == true;
-        var constructible = !isMethod && lexicalThis is null;
-        var function = new JsFunction((receiver, arguments) =>
+        var constructible = !isAsync && !isMethod && lexicalThis is null;
+        var module = _activeModule;
+        var function = new JsFunction((receiver, arguments) => RunGuarded(() =>
         {
+            ConsumeStep();
             if (_callDepth >= 512) throw new InvalidOperationException("Call depth limit exceeded");
-            if (_callDepth == 0 && _scriptDepth == 0) _remainingIterations = MaximumLoopIterations;
             _callDepth++;
-            var previous = (_env, _varEnv, _strict, _this);
+            var previous = CaptureContext();
             _varEnv = new EnvironmentRecord(closure);
             _env = new EnvironmentRecord(_varEnv);
             _strict = strict;
+            _activeModule = module;
             _this = lexicalThis ?? (!strict && AbstractOperations.IsNullish(receiver) ? JsValue.From(_globalObject) : receiver);
             try
             {
-                for (var i = 0; i < parameters.Count; i++)
-                {
-                    var value = i < arguments.Length ? arguments[i] : JsValue.Undefined;
-                    if (_varEnv.HasOwn(parameters[i])) _varEnv.Set(parameters[i], value);
-                    else _varEnv.Declare(parameters[i], value);
-                }
+                if (isAsync) return StartAsync(() => InvokeAsyncFunction(parameters, arguments, body, expressionBody));
+                BindParameters(parameters, arguments);
                 if (expressionBody is not null) return Eval(expressionBody);
                 PrepareScope(body!.Body, _env, functionScope: true, parameterScope: _varEnv);
                 ExecuteList(body.Body);
@@ -502,10 +579,10 @@ public sealed partial class Interpreter
             catch (ReturnSignal returned) { return returned.Value; }
             finally
             {
-                (_env, _varEnv, _strict, _this) = previous;
+                RestoreContext(previous);
                 _callDepth--;
             }
-        }, parameters.Count) { DefaultConstructionPrototype = constructible ? _objectPrototype : null };
+        }), parameters.Count) { DefaultConstructionPrototype = constructible ? _objectPrototype : null };
         function.Prototype = _objectPrototype;
         if (constructible)
         {
@@ -520,5 +597,16 @@ public sealed partial class Interpreter
             closure.Initialize(name, functionValue);
         }
         return functionValue;
+    }
+
+    private void BindParameters(List<string> parameters, JsValue[] arguments)
+    {
+        for (var i = 0; i < parameters.Count; i++)
+        {
+            ConsumeStep();
+            var value = i < arguments.Length ? arguments[i] : JsValue.Undefined;
+            if (_varEnv.HasOwn(parameters[i])) _varEnv.Set(parameters[i], value);
+            else _varEnv.Declare(parameters[i], value);
+        }
     }
 }

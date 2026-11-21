@@ -4,6 +4,7 @@
 using System.Globalization;
 using System.Text.RegularExpressions;
 using AngleSharp.Dom;
+using AngleSharp.Html.Dom;
 using Aprillz.MewUI;
 
 namespace ShoneHtml;
@@ -13,9 +14,12 @@ internal readonly record struct HtmlTextStyle(string? FontFamily, double FontSiz
     internal static readonly HtmlTextStyle Default = new(null, 16, false, false, Color.FromRgb(0, 0, 0));
 }
 
-internal enum HtmlDisplay { Inline, Block, InlineBlock, None }
+internal enum HtmlDisplay { Inline, Block, InlineBlock, None, Flex, InlineFlex, Grid, InlineGrid }
+internal enum HtmlPosition { Static, Relative, Absolute, Fixed }
+internal enum HtmlAlign { Normal, Start, Center, End, Stretch, SpaceBetween, SpaceAround, SpaceEvenly }
+internal readonly record struct CssTrack(CssLength? Length, double Fraction = 0, CssLength? Minimum = null);
 internal enum HtmlWhiteSpace { Normal, NoWrap, Pre, PreWrap }
-internal enum CssUnit { Pixels, Em, Rem, Percent }
+internal enum CssUnit { Pixels, Em, Rem, Percent, Auto }
 
 internal readonly record struct CssLength(double Value, CssUnit Unit = CssUnit.Pixels)
 {
@@ -24,6 +28,7 @@ internal readonly record struct CssLength(double Value, CssUnit Unit = CssUnit.P
         CssUnit.Em => Value * font,
         CssUnit.Rem => Value * rootFont,
         CssUnit.Percent => Value * width / 100,
+        CssUnit.Auto => 0,
         _ => Value
     }, -1_000_000, 1_000_000);
 }
@@ -41,6 +46,22 @@ internal record struct HtmlStyle(HtmlTextStyle Text)
     internal CssEdges Padding;
     internal CssLength? Width;
     internal CssLength? Height;
+    internal CssLength? MinWidth;
+    internal CssLength? MaxWidth;
+    internal CssLength? MinHeight;
+    internal CssLength? MaxHeight;
+    internal CssLength? Top, Right, Bottom, Left;
+    internal HtmlPosition Position;
+    internal int? ZIndex;
+    internal CssLength RowGap, ColumnGap;
+    internal CssLength? FlexBasis;
+    internal double FlexGrow;
+    internal double FlexShrink = 1;
+    internal bool FlexColumn, FlexReverse, FlexWrap, FlexWrapReverse;
+    internal int Order;
+    internal HtmlAlign JustifyContent, AlignItems, AlignSelf;
+    internal CssTrack[]? GridColumns, GridRows;
+    internal int GridColumn, GridRow, GridColumnSpan = 1, GridRowSpan = 1;
     internal CssLength? LineHeight;
     internal bool BorderBox;
     internal Color? Background;
@@ -54,34 +75,63 @@ internal sealed class HtmlStyles
     private static readonly Regex Comments = new("/\\*[^*]*\\*+(?:[^/*][^*]*\\*+)*/|\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*'", RegexOptions.NonBacktracking | RegexOptions.Singleline);
     private readonly Dictionary<string, List<Rule>> _rules = new(StringComparer.Ordinal);
     private readonly List<Rule> _matching = [];
-    private readonly Dictionary<Rule, Dictionary<IElement, int>> _ancestorProgress = new(ReferenceEqualityComparer.Instance);
-    private readonly Stack<IElement> _ancestors = new();
-    private List<string> _sources = [];
+    private readonly Dictionary<Rule, Dictionary<(IElement Element, int Part), bool>> _matches = new(ReferenceEqualityComparer.Instance);
+    private readonly Stack<(IElement Element, int Part, bool Expanded)> _selectorStack = new();
+    private List<(string Text, string Media)> _sources = [];
+    private double _width;
+    private double _height;
+    private IElement? _focused;
+    private IElement? _hovered;
+    private IElement? _active;
+
+    internal void BeginLayout(double width, double height, IElement? focused, IElement? hovered, IElement? active)
+    {
+        _width = width;
+        _height = height;
+        _focused = focused;
+        _hovered = hovered;
+        _active = active;
+    }
 
     internal void EndLayout()
     {
         _matching.Clear();
-        _ancestorProgress.Clear();
-        _ancestors.Clear();
+        _matches.Clear();
+        _selectorStack.Clear();
+        _mediaMatches.Clear();
+        _focused = _hovered = _active = null;
     }
 
-    internal void Update(IDocument document)
+    internal void Update(IDocument document, Func<IElement, string?>? externalStyleSheet)
     {
-        List<string> sources = [];
+        List<(string Text, string Media)> sources = [];
         for (var node = document.FirstChild; node is not null; node = NextNode(node, document))
         {
-            if (node is IElement { LocalName: "style" } element)
-                sources.Add(element.TextContent);
+            if (node is not IElement element) continue;
+            var text = element.LocalName switch
+            {
+                "style" => element.TextContent,
+                "link" when IsStyleSheet(element) => externalStyleSheet?.Invoke(element),
+                _ => null
+            };
+            if (text is not null) sources.Add((text, element.GetAttribute("media") ?? ""));
         }
 
-        if (sources.SequenceEqual(_sources, StringComparer.Ordinal))
+        if (sources.SequenceEqual(_sources))
             return;
 
         _sources = sources;
         _rules.Clear();
         var order = 0;
         foreach (var source in sources)
-            ReadSheet(source, ref order);
+            ReadSheet(source.Text, ref order, string.IsNullOrWhiteSpace(source.Media) ? [] : [source.Media]);
+    }
+
+    private static bool IsStyleSheet(IElement element)
+    {
+        var rel = element.GetAttribute("rel")?.Split(HtmlSpace, StringSplitOptions.RemoveEmptyEntries) ?? [];
+        return rel.Contains("stylesheet", StringComparer.OrdinalIgnoreCase) && !element.HasAttribute("disabled") &&
+            !rel.Contains("alternate", StringComparer.OrdinalIgnoreCase);
     }
 
     private static INode? NextNode(INode node, IDocument root)
@@ -117,8 +167,8 @@ internal sealed class HtmlStyles
         ApplyRules(false);
         ApplyRules(true);
         _matching.Clear();
-        if (element.LocalName is "head" or "script" or "style" or "template")
-            style.Display = HtmlDisplay.None;
+        if (element.LocalName is "head" or "script" or "style" or "template" or "link" ||
+            element is IHtmlInputElement { Type: "hidden" }) style.Display = HtmlDisplay.None;
         return style;
 
         void AddMatches(string key)
@@ -127,7 +177,7 @@ internal sealed class HtmlStyles
                 return;
             foreach (var rule in rules)
             {
-                if (Matches(rule, element))
+                if (rule.Media.All(MatchesMedia) && Matches(rule, element))
                     _matching.Add(rule);
             }
         }
@@ -146,31 +196,93 @@ internal sealed class HtmlStyles
 
     private bool Matches(Rule rule, IElement element)
     {
-        var parts = rule.Parts;
-        if (!parts[^1].Matches(element))
-            return false;
-        var target = parts.Length - 1;
-        if (target == 0)
-            return true;
-        if (!_ancestorProgress.TryGetValue(rule, out var progressByElement))
-            _ancestorProgress.Add(rule, progressByElement = new(ReferenceEqualityComparer.Instance));
+        var target = rule.Parts.Length - 1;
+        if (!rule.Parts[target].Matches(element, this)) return false;
+        if (target == 0) return true;
+        var relation = rule.Combinators[target - 1];
+        var first = Previous(element, relation);
+        if (first is null) return false;
+        if (!_matches.TryGetValue(rule, out var cached)) _matches.Add(rule, cached = new());
 
-        // Remember how many of the left-hand compounds matched along each ancestor path.
-        // This also makes a failing descendant rule linear on a deeply nested document.
-        var matched = 0;
-        for (var ancestor = element.ParentElement; ancestor is not null; ancestor = ancestor.ParentElement)
+        // Cache prefix searches (including sibling/ancestor scans) so failed chains do not
+        // backtrack exponentially and deeply nested documents do not recurse on the CLR stack.
+        var start = (first, target - 1);
+        _selectorStack.Push((first, target - 1, false));
+        while (_selectorStack.TryPop(out var frame))
         {
-            if (progressByElement.TryGetValue(ancestor, out matched))
-                break;
-            _ancestors.Push(ancestor);
+            var (candidate, part, expanded) = frame;
+            var key = (candidate, part);
+            if (cached.ContainsKey(key)) continue;
+            var lookup = rule.Combinators[part];
+            var next = lookup is ' ' or '~' ? Previous(candidate, lookup) : null;
+            var matches = rule.Parts[part].Matches(candidate, this);
+            if (matches && part == 0)
+            {
+                cached[key] = true;
+                continue;
+            }
+            var left = matches ? Previous(candidate, rule.Combinators[part - 1]) : null;
+            if (expanded)
+                cached[key] = (left is not null && cached[(left, part - 1)]) || (next is not null && cached[(next, part)]);
+            else
+            {
+                _selectorStack.Push((candidate, part, true));
+                if (next is not null) _selectorStack.Push((next, part, false));
+                if (left is not null) _selectorStack.Push((left, part - 1, false));
+            }
         }
-        while (_ancestors.TryPop(out var ancestor))
+        return cached[start];
+    }
+
+    private static IElement? Previous(IElement element, char relation) => relation is ' ' or '>'
+        ? element.ParentElement : element.PreviousElementSibling;
+
+    private static readonly char[] HtmlSpace = [' ', '\t', '\r', '\n', '\f'];
+
+    private bool MatchesPseudo(IElement element, string pseudo) => pseudo switch
+    {
+        "checked" => element is IHtmlInputElement input && IsCheckable(input) && input.IsChecked ||
+            element is IHtmlOptionElement { IsSelected: true },
+        "disabled" => IsControl(element) && IsDisabled(element),
+        "enabled" => IsControl(element) && !IsDisabled(element),
+        "required" => CanRequire(element) && element.HasAttribute("required"),
+        "optional" => CanRequire(element) && !element.HasAttribute("required"),
+        "focus" or "focus-visible" => ReferenceEquals(_focused, element),
+        "focus-within" => Contains(element, _focused),
+        "hover" => Contains(element, _hovered),
+        "active" => Contains(element, _active),
+        "link" or "any-link" => element.LocalName is "a" or "area" && element.HasAttribute("href"),
+        "root" => element.Parent is IDocument,
+        "first-child" => element.PreviousElementSibling is null,
+        "last-child" => element.NextElementSibling is null,
+        "only-child" => element.PreviousElementSibling is null && element.NextElementSibling is null,
+        _ => false
+    };
+
+    private static bool IsControl(IElement element) => element.LocalName is "button" or "fieldset" or "input" or "optgroup" or "option" or "select" or "textarea";
+    private static bool IsCheckable(IHtmlInputElement input) => input.Type is "checkbox" or "radio";
+    private static bool CanRequire(IElement element) => element.LocalName is "select" or "textarea" ||
+        element is IHtmlInputElement input && input.Type is not ("hidden" or "range" or "color" or "button" or "submit" or "reset" or "image");
+
+    private static bool IsDisabled(IElement element)
+    {
+        if (element.HasAttribute("disabled")) return true;
+        if (element.LocalName == "option") return element.ParentElement is { LocalName: "optgroup" } group && group.HasAttribute("disabled");
+        if (element.LocalName == "optgroup") return false;
+        for (var parent = element.ParentElement; parent is not null; parent = parent.ParentElement)
         {
-            if (matched < target && parts[matched].Matches(ancestor))
-                matched++;
-            progressByElement.Add(ancestor, matched);
+            if (parent.LocalName != "fieldset" || !parent.HasAttribute("disabled")) continue;
+            var legend = parent.Children.FirstOrDefault(static child => child.LocalName == "legend");
+            if (legend is null || !Contains(legend, element)) return true;
         }
-        return matched == target;
+        return false;
+    }
+
+    private static bool Contains(IElement element, IElement? descendant)
+    {
+        for (var cursor = descendant; cursor is not null; cursor = cursor.ParentElement)
+            if (ReferenceEquals(cursor, element)) return true;
+        return false;
     }
 
     private static HtmlStyle DefaultStyle(IElement element, HtmlStyle parent)
@@ -179,7 +291,7 @@ internal sealed class HtmlStyles
         switch (element.LocalName)
         {
             case "html": case "main": case "section": case "article": case "aside": case "nav": case "header":
-            case "footer": case "div": case "form": case "ul": case "ol": case "li": case "dl": case "dt":
+            case "footer": case "div": case "form": case "fieldset": case "ul": case "ol": case "li": case "dl": case "dt":
             case "dd": case "figure": case "figcaption": case "address": case "details": case "summary":
             case "table": case "thead": case "tbody": case "tfoot": case "tr": case "caption":
                 style.Display = HtmlDisplay.Block;
@@ -225,6 +337,12 @@ internal sealed class HtmlStyles
             case "a" when element.HasAttribute("href"):
                 style.Text = style.Text with { Color = Color.FromRgb(0, 0, 238) };
                 break;
+            case "input" when string.Equals(element.GetAttribute("type"), "hidden", StringComparison.OrdinalIgnoreCase):
+                style.Display = HtmlDisplay.None;
+                break;
+            case "img": case "input": case "select": case "textarea":
+                style.Display = HtmlDisplay.InlineBlock;
+                break;
             case "button":
                 style.Display = HtmlDisplay.InlineBlock;
                 style.Padding = new(new CssLength(3), new CssLength(8), new CssLength(3), new CssLength(8));
@@ -246,9 +364,11 @@ internal sealed class HtmlStyles
         return style;
     }
 
-    private void ReadSheet(string input, ref int order)
+    private void ReadSheet(string input, ref int order, string[] media) => ReadRules(StripComments(input), ref order, media, 0);
+
+    private void ReadRules(ReadOnlySpan<char> css, ref int order, string[] media, int depth)
     {
-        var css = StripComments(input).AsSpan();
+        if (depth > 32) return;
         while (!(css = css.TrimStart()).IsEmpty)
         {
             var isAtRule = css[0] == '@';
@@ -270,19 +390,91 @@ internal sealed class HtmlStyles
                 var declarations = ReadDeclarations(css[..closing]);
                 if (declarations.Length > 0)
                 {
-                    foreach (var text in selectors.ToString().Split(','))
+                    while (!selectors.IsEmpty)
                     {
-                        if (!Rule.TryParse(text.AsSpan(), declarations, order, out var rule))
-                            continue;
-                        if (!_rules.TryGetValue(rule.Key, out var list))
-                            _rules.Add(rule.Key, list = []);
+                        var comma = FindDelimiter(selectors, ",");
+                        var text = comma < 0 ? selectors : selectors[..comma];
+                        selectors = comma < 0 ? [] : selectors[(comma + 1)..];
+                        if (!Rule.TryParse(text, declarations, media, order, out var rule)) continue;
+                        if (!_rules.TryGetValue(rule.Key, out var list)) _rules.Add(rule.Key, list = []);
                         list.Add(rule);
                     }
                     order++;
                 }
             }
+            else if (selectors.StartsWith("@media", StringComparison.OrdinalIgnoreCase) && selectors.Length > 6 &&
+                     (char.IsWhiteSpace(selectors[6]) || selectors[6] == '('))
+                ReadRules(css[..closing], ref order, [.. media, selectors[6..].Trim().ToString()], depth + 1);
             css = css[(closing + 1)..];
         }
+    }
+
+    private readonly Dictionary<string, bool> _mediaMatches = new(StringComparer.Ordinal);
+
+    private bool MatchesMedia(string media)
+    {
+        if (_mediaMatches.TryGetValue(media, out var match)) return match;
+        foreach (var query in media.ToLowerInvariant().Split(','))
+            if (MatchesMediaQuery(query.AsSpan().Trim())) return _mediaMatches[media] = true;
+        return _mediaMatches[media] = false;
+    }
+
+    private bool MatchesMediaQuery(ReadOnlySpan<char> query)
+    {
+        var negate = ReadWord(ref query, "not");
+        if (!negate) ReadWord(ref query, "only");
+        var result = true;
+        if (query.IsEmpty) return false;
+        if (query[0] != '(')
+        {
+            var space = query.IndexOfAny(" \t\r\n\f");
+            var type = space < 0 ? query : query[..space];
+            result = type is "screen" or "all";
+            if (space < 0) return result != negate;
+            query = query[space..].TrimStart();
+            if (!ReadWord(ref query, "and")) return false;
+        }
+        while (!query.IsEmpty)
+        {
+            if (query[0] != '(') return false;
+            var end = query.IndexOf(')');
+            if (end < 0) return false;
+            result &= MatchesMediaFeature(query[1..end].Trim());
+            query = query[(end + 1)..].TrimStart();
+            if (query.IsEmpty) return result != negate;
+            if (!ReadWord(ref query, "and") || query.IsEmpty) return false;
+        }
+        return false;
+    }
+
+    private bool MatchesMediaFeature(ReadOnlySpan<char> feature)
+    {
+        var separator = feature.IndexOf(':');
+        if (separator < 0) return feature is "width" ? _width > 0 : feature is "height" && _height > 0;
+        var name = feature[..separator].TrimEnd();
+        var value = feature[(separator + 1)..].Trim();
+        if (name is "orientation")
+            return value is "portrait" ? _height >= _width : value is "landscape" && _width > _height;
+        if (name is "hover" or "any-hover") return value is "hover";
+        if (name is "pointer" or "any-pointer") return value is "fine";
+        if (name is "prefers-color-scheme") return value is "light";
+        if (name is "prefers-reduced-motion") return value is "no-preference";
+        if (!TryLength(value, false, out var length) || length.Unit == CssUnit.Percent) return false;
+        var boundary = length.Resolve(0, HtmlTextStyle.Default.FontSize, HtmlTextStyle.Default.FontSize);
+        return name switch
+        {
+            "min-width" => _width >= boundary, "max-width" => _width <= boundary, "width" => _width == boundary,
+            "min-height" => _height >= boundary, "max-height" => _height <= boundary, "height" => _height == boundary,
+            _ => false
+        };
+    }
+
+    private static bool ReadWord(ref ReadOnlySpan<char> text, string word)
+    {
+        if (!text.StartsWith(word, StringComparison.Ordinal) || (text.Length > word.Length && !char.IsWhiteSpace(text[word.Length])))
+            return false;
+        text = text[word.Length..].TrimStart();
+        return true;
     }
 
     private static string StripComments(string css) => Comments.Replace(css, static match => match.Value[0] == '/' ? "" : match.Value);
@@ -372,6 +564,8 @@ internal sealed class HtmlStyles
                 {
                     "none" => HtmlDisplay.None, "block" or "list-item" or "flow-root" => HtmlDisplay.Block,
                     "inline" or "initial" => HtmlDisplay.Inline, "inline-block" => HtmlDisplay.InlineBlock,
+                    "flex" => HtmlDisplay.Flex, "inline-flex" => HtmlDisplay.InlineFlex,
+                    "grid" => HtmlDisplay.Grid, "inline-grid" => HtmlDisplay.InlineGrid,
                     "inherit" => parent.Display, _ => style.Display
                 };
                 break;
@@ -467,6 +661,95 @@ internal sealed class HtmlStyles
                 else if (inherit) style.Height = parent.Height;
                 else if (TryLength(value, false, out var heightValue)) style.Height = heightValue;
                 break;
+            case "min-width": case "max-width": case "min-height": case "max-height":
+                if (keyword is "none" or "auto" or "initial" or "unset" || TryLength(value, false, out _))
+                {
+                    CssLength? limit = TryLength(value, false, out var parsed) ? parsed : null;
+                    switch (declaration.Name)
+                    {
+                        case "min-width": style.MinWidth = limit; break;
+                        case "max-width": style.MaxWidth = limit; break;
+                        case "min-height": style.MinHeight = limit; break;
+                        case "max-height": style.MaxHeight = limit; break;
+                    }
+                }
+                break;
+            case "position":
+                style.Position = keyword switch
+                {
+                    "static" or "initial" or "unset" => HtmlPosition.Static, "relative" => HtmlPosition.Relative,
+                    "absolute" => HtmlPosition.Absolute, "fixed" => HtmlPosition.Fixed, "inherit" => parent.Position,
+                    _ => style.Position
+                };
+                break;
+            case "z-index":
+                if (keyword is "auto" or "initial" or "unset") style.ZIndex = null;
+                else if (int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var zIndex)) style.ZIndex = zIndex;
+                break;
+            case "inset":
+                if (TryInsets(keyword, out var offsets))
+                    (style.Top, style.Right, style.Bottom, style.Left) = offsets;
+                break;
+            case "top": case "right": case "bottom": case "left":
+                if (TryOffset(keyword, out var offset))
+                    switch (declaration.Name)
+                    {
+                        case "top": style.Top = offset; break;
+                        case "right": style.Right = offset; break;
+                        case "bottom": style.Bottom = offset; break;
+                        case "left": style.Left = offset; break;
+                    }
+                break;
+            case "gap": case "row-gap": case "column-gap":
+                var gaps = keyword.Split(HtmlSpace, StringSplitOptions.RemoveEmptyEntries);
+                if (gaps.Length is 1 or 2 && TryGap(gaps[0], out var firstGap) &&
+                    (gaps.Length == 1 || declaration.Name == "gap" && TryGap(gaps[1], out _)))
+                {
+                    if (declaration.Name != "column-gap") style.RowGap = firstGap;
+                    if (declaration.Name != "row-gap") style.ColumnGap = gaps.Length == 2 && TryGap(gaps[1], out var secondGap) ? secondGap : firstGap;
+                }
+                break;
+            case "flex-flow":
+                foreach (var token in keyword.Split(HtmlSpace, StringSplitOptions.RemoveEmptyEntries))
+                    if (!ApplyDirection(ref style, token)) ApplyWrap(ref style, token);
+                break;
+            case "flex-direction": ApplyDirection(ref style, keyword); break;
+            case "flex-wrap": ApplyWrap(ref style, keyword); break;
+            case "flex-grow":
+                if (TryNumber(value, out var grow) && grow >= 0) style.FlexGrow = Math.Min(grow, 1_000_000);
+                break;
+            case "flex-shrink":
+                if (TryNumber(value, out var shrink) && shrink >= 0) style.FlexShrink = Math.Min(shrink, 1_000_000);
+                break;
+            case "flex-basis":
+                if (TryBasis(keyword, out var basis)) style.FlexBasis = basis;
+                break;
+            case "flex": ApplyFlex(ref style, keyword); break;
+            case "order":
+                if (int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var itemOrder)) style.Order = itemOrder;
+                break;
+            case "justify-content":
+                if (TryAlign(keyword, out var justify)) style.JustifyContent = justify;
+                break;
+            case "align-items":
+                if (TryAlign(keyword, out var alignItems)) style.AlignItems = alignItems;
+                break;
+            case "align-self":
+                if (TryAlign(keyword, out var alignSelf)) style.AlignSelf = alignSelf;
+                break;
+            case "grid-template-columns": case "grid-template-rows":
+                if (TryTracks(keyword, out var tracks))
+                {
+                    if (declaration.Name == "grid-template-columns") style.GridColumns = tracks;
+                    else style.GridRows = tracks;
+                }
+                break;
+            case "grid-column":
+                if (TryPlacement(keyword, out var column, out var columnSpan)) (style.GridColumn, style.GridColumnSpan) = (column, columnSpan);
+                break;
+            case "grid-row":
+                if (TryPlacement(keyword, out var row, out var rowSpan)) (style.GridRow, style.GridRowSpan) = (row, rowSpan);
+                break;
             case "margin": case "padding":
                 var isMargin = declaration.Name == "margin";
                 if (TryEdges(value, isMargin, out var edges))
@@ -484,6 +767,166 @@ internal sealed class HtmlStyles
                     style.Padding = SetEdge(style.Padding, declaration.Name.AsSpan(8), padding);
                 break;
         }
+    }
+
+    private static bool TryGap(string value, out CssLength length) => TryLength(value, false, out length) || value == "normal";
+
+    private static bool TryOffset(string value, out CssLength? offset)
+    {
+        offset = null;
+        if (value is "auto" or "initial" or "unset") return true;
+        if (!TryLength(value, true, out var length)) return false;
+        offset = length;
+        return true;
+    }
+
+    private static bool TryInsets(string value, out (CssLength?, CssLength?, CssLength?, CssLength?) offsets)
+    {
+        offsets = default;
+        var parts = value.Split(HtmlSpace, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length is < 1 or > 4) return false;
+        Span<CssLength?> values = stackalloc CssLength?[4];
+        for (var i = 0; i < parts.Length; i++)
+            if (!TryOffset(parts[i], out values[i])) return false;
+        offsets = (values[0], parts.Length > 1 ? values[1] : values[0], parts.Length > 2 ? values[2] : values[0],
+            parts.Length > 3 ? values[3] : parts.Length > 1 ? values[1] : values[0]);
+        return true;
+    }
+
+    private static bool ApplyDirection(ref HtmlStyle style, string value)
+    {
+        if (value is not ("row" or "row-reverse" or "column" or "column-reverse")) return false;
+        style.FlexColumn = value.StartsWith("column", StringComparison.Ordinal);
+        style.FlexReverse = value.EndsWith("-reverse", StringComparison.Ordinal);
+        return true;
+    }
+
+    private static bool ApplyWrap(ref HtmlStyle style, string value)
+    {
+        if (value is not ("nowrap" or "wrap" or "wrap-reverse")) return false;
+        style.FlexWrap = value != "nowrap";
+        style.FlexWrapReverse = value == "wrap-reverse";
+        return true;
+    }
+
+    private static bool TryBasis(string value, out CssLength? basis)
+    {
+        basis = null;
+        if (value is "auto" or "content") return true;
+        if (!TryLength(value, false, out var length)) return false;
+        basis = length;
+        return true;
+    }
+
+    private static void ApplyFlex(ref HtmlStyle style, string value)
+    {
+        if (value is "none" or "auto" or "initial")
+        {
+            (style.FlexGrow, style.FlexShrink, style.FlexBasis) = (value == "auto" ? 1 : 0, value == "none" ? 0 : 1, null);
+            return;
+        }
+        var parts = value.Split(HtmlSpace, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length is < 1 or > 3) return;
+        double grow = 1, shrink = 1;
+        CssLength? basis = new(0, CssUnit.Percent);
+        var i = 0;
+        if (TryNumber(parts[0], out var first) && first >= 0)
+        {
+            grow = Math.Min(first, 1_000_000);
+            i++;
+            if (i < parts.Length && TryNumber(parts[i], out var second) && second >= 0)
+            {
+                shrink = Math.Min(second, 1_000_000);
+                i++;
+            }
+        }
+        if (i < parts.Length && (i != parts.Length - 1 || !TryBasis(parts[i], out basis))) return;
+        (style.FlexGrow, style.FlexShrink, style.FlexBasis) = (grow, shrink, basis);
+    }
+
+    private static bool TryAlign(string value, out HtmlAlign align)
+    {
+        align = value switch
+        {
+            "center" => HtmlAlign.Center, "start" or "flex-start" or "left" => HtmlAlign.Start,
+            "end" or "flex-end" or "right" => HtmlAlign.End, "stretch" => HtmlAlign.Stretch,
+            "space-between" => HtmlAlign.SpaceBetween, "space-around" => HtmlAlign.SpaceAround,
+            "space-evenly" => HtmlAlign.SpaceEvenly, _ => HtmlAlign.Normal
+        };
+        return align != HtmlAlign.Normal || value is "normal" or "auto" or "initial";
+    }
+
+    private static bool TryTracks(ReadOnlySpan<char> value, out CssTrack[]? tracks, bool allowRepeat = true)
+    {
+        tracks = null;
+        if (value is "none" or "initial") return true;
+        List<CssTrack> list = [];
+        while (!(value = value.TrimStart()).IsEmpty)
+        {
+            var end = FindDelimiter(value, " \t\r\n\f");
+            var token = end < 0 ? value : value[..end];
+            value = end < 0 ? [] : value[(end + 1)..];
+            if (allowRepeat && token.StartsWith("repeat(", StringComparison.Ordinal) && token.EndsWith(")"))
+            {
+                var args = token[7..^1];
+                var comma = FindDelimiter(args, ",");
+                if (comma < 0 || !int.TryParse(args[..comma].Trim(), out var count) || count is < 1 or > 128 ||
+                    !TryTracks(args[(comma + 1)..], out var repeated, false) || repeated is null ||
+                    repeated.Length * count + list.Count > 128) return false;
+                for (var i = 0; i < count; i++) list.AddRange(repeated);
+            }
+            else if (TryTrack(token, out var track)) list.Add(track);
+            else return false;
+            if (list.Count > 128) return false;
+        }
+        if (list.Count == 0) return false;
+        tracks = [.. list];
+        return true;
+    }
+
+    private static bool TryTrack(ReadOnlySpan<char> token, out CssTrack track)
+    {
+        track = default;
+        if (token is "auto" or "min-content" or "max-content") return true;
+        if (TryLength(token, false, out var length)) { track = new(length); return true; }
+        if (token.EndsWith("fr") && TryNumber(token[..^2], out var fraction) && fraction >= 0)
+        {
+            track = new(null, Math.Min(fraction, 1_000_000));
+            return true;
+        }
+        if (!token.StartsWith("minmax(", StringComparison.Ordinal) || !token.EndsWith(")")) return false;
+        var args = token[7..^1];
+        var comma = args.IndexOf(',');
+        if (comma < 0) return false;
+        var min = args[..comma].Trim();
+        var max = args[(comma + 1)..].Trim();
+        CssLength? minimum = TryLength(min, false, out var parsedMin) ? parsedMin : null;
+        if (minimum is null && min is not ("auto" or "min-content" or "max-content")) return false;
+        if (TryLength(max, false, out var maximum)) { track = new(maximum, 0, minimum); return true; }
+        if (max.EndsWith("fr") && TryNumber(max[..^2], out fraction) && fraction >= 0)
+        {
+            track = new(null, Math.Min(fraction, 1_000_000), minimum);
+            return true;
+        }
+        if (max is not ("auto" or "min-content" or "max-content")) return false;
+        track = new(null, 0, minimum);
+        return true;
+    }
+
+    private static bool TryPlacement(string value, out int start, out int span)
+    {
+        start = 0;
+        span = 1;
+        var parts = value.Split('/', 2, StringSplitOptions.TrimEntries);
+        if (parts[0].StartsWith("span ", StringComparison.Ordinal))
+            return parts.Length == 1 && int.TryParse(parts[0].AsSpan(5), out span) && span is >= 1 and <= 128;
+        if (parts[0] != "auto" && (!int.TryParse(parts[0], out start) || start is < 1 or > 128)) return false;
+        if (parts.Length == 1 || parts[1] == "auto") return true;
+        if (parts[1].StartsWith("span ", StringComparison.Ordinal))
+            return int.TryParse(parts[1].AsSpan(5), out span) && span is >= 1 and <= 128;
+        if (start == 0 || !int.TryParse(parts[1], out var end) || end <= start || end > 129) return false;
+        span = end - start;
+        return true;
     }
 
     private static CssEdges SetEdge(CssEdges edges, ReadOnlySpan<char> side, CssLength length) => side switch
@@ -509,10 +952,13 @@ internal sealed class HtmlStyles
 
     private static bool TryEdge(ReadOnlySpan<char> value, bool negative, out CssLength length)
     {
+        if (negative && value.Equals("auto", StringComparison.OrdinalIgnoreCase))
+        {
+            length = new(0, CssUnit.Auto);
+            return true;
+        }
         length = default;
-        return value.Equals("initial", StringComparison.OrdinalIgnoreCase)
-               || (negative && value.Equals("auto", StringComparison.OrdinalIgnoreCase))
-               || TryLength(value, negative, out length);
+        return value.Equals("initial", StringComparison.OrdinalIgnoreCase) || TryLength(value, negative, out length);
     }
 
     private static bool TryLength(ReadOnlySpan<char> value, bool negative, out CssLength length)
@@ -628,9 +1074,80 @@ internal sealed class HtmlStyles
         return true;
     }
 
+    private static int EndAttribute(ReadOnlySpan<char> text)
+    {
+        var quote = '\0';
+        for (var index = 0; index < text.Length; index++)
+        {
+            var ch = text[index];
+            if (ch == '\\') { index++; continue; }
+            if (quote == '\0')
+            {
+                if (ch == ']') return index;
+                if (ch is '\'' or '"') quote = ch;
+            }
+            else if (ch == quote) quote = '\0';
+        }
+        return -1;
+    }
+
+    private readonly record struct AttributeTest(string Name, string Operator, string Value, char Flag)
+    {
+        internal static bool TryParse(ReadOnlySpan<char> text, out AttributeTest test)
+        {
+            test = default;
+            var name = Compound.ReadName(ref text);
+            if (name is null) return false;
+            text = text.TrimStart();
+            if (text.IsEmpty) { test = new(name, "", "", '\0'); return true; }
+            var offset = text[0] == '=' ? 1 : text.Length > 1 && text[1] == '=' && text[0] is '~' or '|' or '^' or '$' or '*' ? 2 : 0;
+            if (offset == 0) return false;
+            var op = text[..offset].ToString();
+            text = text[offset..].TrimStart();
+            if (text.IsEmpty) return false;
+            string? value;
+            if (text[0] is '\'' or '"')
+            {
+                var quote = text[0];
+                var end = 1;
+                while (end < text.Length && text[end] != quote)
+                    end += text[end] == '\\' ? 2 : 1;
+                if (end >= text.Length) return false;
+                value = text[1..end].ToString();
+                text = text[(end + 1)..];
+            }
+            else value = Compound.ReadName(ref text);
+            if (value is null) return false;
+            text = text.Trim();
+            var flag = text.IsEmpty ? '\0' : text.Length == 1 ? char.ToLowerInvariant(text[0]) : '?';
+            if (flag is not ('\0' or 's' or 'i')) return false;
+            test = new(name, op, value, flag);
+            return true;
+        }
+
+        internal bool Matches(IElement element)
+        {
+            if (element.GetAttribute(Name) is not { } actual) return false;
+            var comparison = Flag == 'i' || (Flag == '\0' && Name.Equals("type", StringComparison.OrdinalIgnoreCase) &&
+                element.LocalName is "input" or "button") ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+            return Operator switch
+            {
+                "" => true, "=" => actual.Equals(Value, comparison),
+                "^=" => Value.Length > 0 && actual.StartsWith(Value, comparison),
+                "$=" => Value.Length > 0 && actual.EndsWith(Value, comparison),
+                "*=" => Value.Length > 0 && actual.Contains(Value, comparison),
+                "|=" => actual.Equals(Value, comparison) || actual.StartsWith(Value + "-", comparison),
+                "~=" => actual.Split(HtmlSpace, StringSplitOptions.RemoveEmptyEntries).Contains(Value,
+                    comparison == StringComparison.Ordinal ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase),
+                _ => false
+            };
+        }
+    }
+
     private readonly record struct Declaration(string Name, string Value, bool Important);
 
-    private sealed record Rule(Compound[] Parts, int IdCount, int ClassCount, int TagCount, int Order, Declaration[] Declarations)
+    private sealed record Rule(Compound[] Parts, char[] Combinators, int IdCount, int ClassCount, int TagCount,
+        int Order, Declaration[] Declarations, string[] Media)
     {
         internal string Key => Parts[^1].Key;
 
@@ -642,37 +1159,43 @@ internal sealed class HtmlStyles
             return compare == 0 ? x.Order.CompareTo(y.Order) : compare;
         }
 
-        internal static bool TryParse(ReadOnlySpan<char> selector, Declaration[] declarations, int order, out Rule rule)
+        internal static bool TryParse(ReadOnlySpan<char> selector, Declaration[] declarations, string[] media, int order, out Rule rule)
         {
             rule = null!;
             List<Compound> parts = [];
+            List<char> combinators = [];
             var ids = 0;
             var classes = 0;
             var tags = 0;
-            while (!(selector = selector.TrimStart()).IsEmpty)
+            selector = selector.Trim();
+            while (!selector.IsEmpty)
             {
-                var offset = selector.IndexOfAny(" \t\r\n\f");
+                var offset = FindDelimiter(selector, " \t\r\n\f>+~");
                 var current = offset < 0 ? selector : selector[..offset];
-                selector = offset < 0 ? [] : selector[offset..];
-                if (!Compound.TryParse(current, out var compound))
-                    return false;
+                selector = offset < 0 ? [] : selector[offset..].TrimStart();
+                if (!Compound.TryParse(current, out var compound)) return false;
                 parts.Add(compound);
                 ids += compound.Ids.Length;
-                classes += compound.Classes.Length;
+                classes += compound.Classes.Length + compound.Attributes.Length + compound.Pseudos.Length;
                 if (compound.Tag is not null) tags++;
+                if (selector.IsEmpty) break;
+                var relation = selector[0];
+                if (relation is '>' or '+' or '~') selector = selector[1..].TrimStart();
+                else relation = ' ';
+                if (selector.IsEmpty) return false;
+                combinators.Add(relation);
             }
-            if (parts.Count == 0)
-                return false;
-            rule = new([.. parts], ids, classes, tags, order, declarations);
+            if (parts.Count == 0) return false;
+            rule = new([.. parts], [.. combinators], ids, classes, tags, order, declarations, media);
             return true;
         }
     }
 
-    private sealed record Compound(string? Tag, string[] Ids, string[] Classes)
+    private sealed record Compound(string? Tag, string[] Ids, string[] Classes, AttributeTest[] Attributes, string[] Pseudos)
     {
         internal string Key => Ids.Length > 0 ? "#" + Ids[0] : Classes.Length > 0 ? "." + Classes[0] : Tag ?? "*";
 
-        internal bool Matches(IElement element)
+        internal bool Matches(IElement element, HtmlStyles styles)
         {
             if (Tag is not null && !Tag.Equals(element.LocalName, StringComparison.OrdinalIgnoreCase))
                 return false;
@@ -680,8 +1203,11 @@ internal sealed class HtmlStyles
                 if (!id.Equals(element.Id, StringComparison.Ordinal))
                     return false;
             foreach (var className in Classes)
-                if (!element.ClassList.Contains(className))
-                    return false;
+                if (!element.ClassList.Contains(className)) return false;
+            foreach (var attribute in Attributes)
+                if (!attribute.Matches(element)) return false;
+            foreach (var pseudo in Pseudos)
+                if (!styles.MatchesPseudo(element, pseudo)) return false;
             return true;
         }
 
@@ -690,9 +1216,12 @@ internal sealed class HtmlStyles
             compound = null!;
             List<string>? ids = null;
             List<string>? classes = null;
+            List<AttributeTest>? attributes = null;
+            List<string>? pseudos = null;
             string? tag = null;
+            if (text.IsEmpty) return false;
             if (text[0] == '*') text = text[1..];
-            else if (text[0] is not ('#' or '.'))
+            else if (text[0] is not ('#' or '.' or '[' or ':'))
             {
                 tag = ReadName(ref text)?.ToLowerInvariant();
                 if (tag is null) return false;
@@ -700,18 +1229,27 @@ internal sealed class HtmlStyles
             while (!text.IsEmpty)
             {
                 var prefix = text[0];
-                if (prefix is not ('#' or '.')) return false;
                 text = text[1..];
+                if (prefix == '[')
+                {
+                    var end = EndAttribute(text);
+                    if (end < 0 || !AttributeTest.TryParse(text[..end].Trim(), out var attribute)) return false;
+                    (attributes ??= []).Add(attribute);
+                    text = text[(end + 1)..];
+                    continue;
+                }
+                if (prefix is not ('#' or '.' or ':')) return false;
                 var name = ReadName(ref text);
                 if (name is null) return false;
                 if (prefix == '#') (ids ??= []).Add(name);
-                else (classes ??= []).Add(name);
+                else if (prefix == '.') (classes ??= []).Add(name);
+                else (pseudos ??= []).Add(name.ToLowerInvariant());
             }
-            compound = new(tag, ids?.ToArray() ?? [], classes?.ToArray() ?? []);
+            compound = new(tag, ids?.ToArray() ?? [], classes?.ToArray() ?? [], attributes?.ToArray() ?? [], pseudos?.ToArray() ?? []);
             return true;
         }
 
-        private static string? ReadName(ref ReadOnlySpan<char> text)
+        internal static string? ReadName(ref ReadOnlySpan<char> text)
         {
             var length = 0;
             while (length < text.Length && (char.IsAsciiLetterOrDigit(text[length]) || text[length] is '_' or '-' || text[length] >= 128))

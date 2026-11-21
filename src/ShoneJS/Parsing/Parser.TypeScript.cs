@@ -90,60 +90,90 @@ public sealed partial class Parser
 
     private Token PeekToken(int distance) => tokens[Math.Min(_index + distance, tokens.Count - 1)];
 
-    // Parenthesized arrows are ambiguous with grouped expressions (and '<' may start a generic).
-    // Parse speculatively, restoring both token and generic-closer state on failure.
-    private bool TryParenthesizedArrow(out Expr arrow)
+    // Only the parameter head is speculative. Errors after '=>' belong to the arrow body.
+    private bool TryArrow(out Expr arrow)
     {
+        arrow = null!;
+        var start = Current;
+        var isAsync = start.Kind == TokenKind.Identifier && start.Text == "async" &&
+            PeekToken(1).Kind is TokenKind.Identifier or TokenKind.LeftParen && !PeekToken(1).HasLineTerminatorBefore;
+        if (start.Kind == TokenKind.Identifier && PeekToken(1).Kind == TokenKind.Arrow && !PeekToken(1).HasLineTerminatorBefore)
+        {
+            Take();
+            Take();
+            arrow = ParseArrowBody([new ArrowParameter(start.Text)], [start], null, start.Start, false);
+            return true;
+        }
+        if (!isAsync && start.Kind != TokenKind.LeftParen && !(typeScript && start.Kind == TokenKind.Less)) return false;
         var saved = _index;
         var savedPending = _pendingTypeClosers;
-        var start = Current.Start;
+        List<ArrowParameter> parameters = [];
+        List<Token> names = [];
+        List<TypeParameter> typeParameters = [];
+        TypeNode? returnType = null;
         try
         {
-            var typeParameters = Current.Kind == TokenKind.Less ? ParseTypeParameters() : [];
-            if (_pendingTypeClosers != 0) throw Error("Unmatched generic type closer", Current);
-            Need(TokenKind.LeftParen);
-            var parameters = new List<ArrowParameter>();
-            if (Current.Kind != TokenKind.RightParen)
+            if (isAsync) Take();
+            if (isAsync && Current.Kind == TokenKind.Identifier)
             {
-                do
+                var name = Take();
+                names.Add(name);
+                parameters.Add(new ArrowParameter(name.Text));
+            }
+            else
+            {
+                if (typeScript && Current.Kind == TokenKind.Less) typeParameters = ParseTypeParameters();
+                if (_pendingTypeClosers != 0) throw Error("Unmatched generic type closer", Current);
+                Need(TokenKind.LeftParen);
+                while (Current.Kind != TokenKind.RightParen)
                 {
                     var parameter = Need(TokenKind.Identifier);
-                    Match(TokenKind.Question);
-                    var type = Match(TokenKind.Colon) ? ParseType() : null;
+                    names.Add(parameter);
+                    if (typeScript) Match(TokenKind.Question);
+                    var type = typeScript && Match(TokenKind.Colon) ? ParseType() : null;
                     parameters.Add(new ArrowParameter(parameter.Text, type));
-                } while (Match(TokenKind.Comma));
+                    if (!Match(TokenKind.Comma)) break;
+                }
+                Need(TokenKind.RightParen);
+                if (typeScript && Match(TokenKind.Colon)) returnType = ParseType();
             }
-            Need(TokenKind.RightParen);
-            var returnType = Match(TokenKind.Colon) ? ParseType() : null;
-            if (LineBreak || !Match(TokenKind.Arrow))
-            {
-                _index = saved;
-                _pendingTypeClosers = savedPending;
-                arrow = null!;
-                return false;
-            }
-            arrow = ParseArrowBody(parameters, returnType, start) with { TypeParameters = typeParameters };
-            return true;
+            if (LineBreak) throw Error("Line terminator before arrow", Current);
+            Need(TokenKind.Arrow);
         }
         catch (JsSyntaxException)
         {
             _index = saved;
             _pendingTypeClosers = savedPending;
-            arrow = null!;
             return false;
         }
+        arrow = ParseArrowBody(parameters, names, returnType, start.Start, isAsync) with { TypeParameters = typeParameters };
+        return true;
     }
 
-    private ArrowFunctionExpr ParseArrowBody(IReadOnlyList<ArrowParameter> parameters, TypeNode? returnType, SourcePosition start)
+    private ArrowFunctionExpr ParseArrowBody(IReadOnlyList<ArrowParameter> parameters, List<Token> names,
+        TypeNode? returnType, SourcePosition start, bool isAsync)
     {
-        var tokens = parameters.Select(parameter => new Token(TokenKind.Identifier, parameter.Name, start.Offset, start.Line, start.Column)).ToList();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var name in names)
+        {
+            ValidateBinding(name);
+            if (isAsync && name.Text == "await") throw Error("Invalid async parameter", name);
+            if (!seen.Add(name.Text)) throw Error("Duplicate arrow parameter", name);
+        }
         if (Current.Kind == TokenKind.LeftBrace)
         {
-            var body = FunctionBody(null, tokens);
-            return new ArrowFunctionExpr(parameters, null, body) { ReturnType = returnType, Span = new(start, body.Span.End) };
+            var body = FunctionBody(null, names, isAsync);
+            return new ArrowFunctionExpr(parameters, null, body) { IsAsync = isAsync, ReturnType = returnType, Span = new(start, body.Span.End) };
         }
-        var expression = Expression(1);
-        return new ArrowFunctionExpr(parameters, expression, null) { ReturnType = returnType, Span = new(start, expression.Span.End) };
+        var previousAsync = _asyncFunction;
+        _asyncFunction = isAsync;
+        _functionDepth++;
+        try
+        {
+            var expression = Expression(1);
+            return new ArrowFunctionExpr(parameters, expression, null) { IsAsync = isAsync, ReturnType = returnType, Span = new(start, expression.Span.End) };
+        }
+        finally { _functionDepth--; _asyncFunction = previousAsync; }
     }
 
     // In TSX-like syntax, '<...>' can be a comparison rather than type arguments; rollback
@@ -230,7 +260,12 @@ public sealed partial class Parser
         }
     }
 
-    private TypeNode ParseType() => ParseUnionType();
+    private TypeNode ParseType()
+    {
+        EnterParse();
+        try { return ParseUnionType(); }
+        finally { _parseDepth--; }
+    }
 
     private TypeNode ParseUnionType()
     {

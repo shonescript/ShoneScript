@@ -15,6 +15,9 @@ public sealed record BlockStmt(List<Stmt> Body) : Stmt
     public bool IsStrict { get; init; }
 }
 
+internal sealed record AwaitExpr(Expr Operand) : Expr;
+internal sealed record ImportMetaExpr : Expr;
+
 public sealed record VarStmt(TokenKind Kind, string Name, Expr? Init) : Stmt
 {
     public TypeNode? TypeAnnotation { get; init; }
@@ -22,6 +25,7 @@ public sealed record VarStmt(TokenKind Kind, string Name, Expr? Init) : Stmt
 public sealed record VarListStmt(List<VarStmt> Declarations) : Stmt;
 public sealed record FunctionStmt(string Name, List<string> Parameters, BlockStmt Body) : Stmt
 {
+    public bool IsAsync { get; init; }
     public IReadOnlyList<TypeNode?> ParameterTypes { get; init; } = [];
     public IReadOnlyList<TypeParameter> TypeParameters { get; init; } = [];
     public TypeNode? ReturnType { get; init; }
@@ -80,11 +84,13 @@ public sealed record NewExpr(Expr Target, List<Expr> Arguments) : Expr;
 public sealed record ArrowParameter(string Name, TypeNode? Type = null);
 public sealed record ArrowFunctionExpr(IReadOnlyList<ArrowParameter> Parameters, Expr? ExpressionBody, BlockStmt? BlockBody) : Expr
 {
+    public bool IsAsync { get; init; }
     public IReadOnlyList<TypeParameter> TypeParameters { get; init; } = [];
     public TypeNode? ReturnType { get; init; }
 }
 public sealed record FunctionExpr(List<string> Parameters, BlockStmt Body) : Expr
 {
+    public bool IsAsync { get; init; }
     public string? Name { get; init; }
     public bool IsMethod { get; init; }
     public IReadOnlyList<TypeNode?> ParameterTypes { get; init; } = [];

@@ -6,9 +6,9 @@ using System.Text;
 
 namespace ShoneJs.Parsing;
 
-public sealed class Lexer(string source)
+public sealed class Lexer(string source, CancellationToken cancellationToken = default)
 {
-    private int _offset, _line = 1, _column = 1;
+    private int _offset, _line = 1, _column = 1, _charactersRead;
     private bool _lineBefore;
     private readonly List<Token> _tokens = [];
     private readonly Stack<int> _templateBraces = new();
@@ -31,6 +31,7 @@ public sealed class Lexer(string source)
     // Tokenizes once and then reuses the same list; callers may safely invoke Scan repeatedly.
     public IReadOnlyList<Token> Scan()
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (_tokens.Count != 0 && _tokens[^1].Kind == TokenKind.End) return _tokens;
         if (Peek() == '#' && Peek(1) == '!') SkipLine();
         while (_offset < source.Length)
@@ -296,6 +297,7 @@ public sealed class Lexer(string source)
 
     private char Advance()
     {
+        if ((++_charactersRead & 255) == 0) cancellationToken.ThrowIfCancellationRequested();
         var ch = source[_offset++];
         if (IsLineTerminator(ch))
         {

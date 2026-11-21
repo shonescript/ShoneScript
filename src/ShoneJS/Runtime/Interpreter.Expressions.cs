@@ -9,7 +9,13 @@ namespace ShoneJs.Runtime;
 
 public sealed partial class Interpreter
 {
-    private JsValue Eval(Expr expression) => expression switch
+    private JsValue Eval(Expr expression)
+    {
+        ConsumeStep();
+        return EvalCore(expression);
+    }
+
+    private JsValue EvalCore(Expr expression) => expression switch
     {
         LiteralExpr literal => literal.Value switch
         {
@@ -22,6 +28,7 @@ public sealed partial class Interpreter
         },
         BigIntExpr integer => JsValue.From(integer.Value),
         ThisExpr => _this,
+        ImportMetaExpr => JsValue.From(_activeModule!.Meta),
         IdentifierExpr or MemberExpr or OptionalChainExpr => Resolve(expression).Read(),
         TemplateExpr template => Interpolate(template),
         UnaryExpr unary => Unary(unary),
@@ -31,9 +38,9 @@ public sealed partial class Interpreter
         UpdateExpr update => Update(update),
         CallExpr call => Call(call.Target, call.Arguments),
         NewExpr call => Construct(call),
-        FunctionExpr function => MakeFunction(function.Parameters, function.Body, _env, function.Name, function.IsMethod),
+        FunctionExpr function => MakeFunction(function.Parameters, function.Body, _env, function.Name, function.IsMethod, isAsync: function.IsAsync),
         ArrowFunctionExpr arrow => MakeFunction(arrow.Parameters.Select(parameter => parameter.Name).ToList(), arrow.BlockBody,
-            _env, lexicalThis: _this, expressionBody: arrow.ExpressionBody),
+            _env, lexicalThis: _this, expressionBody: arrow.ExpressionBody, isAsync: arrow.IsAsync),
         ArrayExpr array => MakeArray(array),
         ObjectExpr obj => MakeObject(obj),
         ConditionalExpr condition => Eval(condition.Test).ToBoolean() ? Eval(condition.Then) : Eval(condition.Else),
@@ -82,7 +89,11 @@ public sealed partial class Interpreter
 
     private Reference MemberReference(JsValue receiver, Expr keyExpression)
     {
-        var property = Eval(keyExpression);
+        return MemberReference(receiver, Eval(keyExpression));
+    }
+
+    private Reference MemberReference(JsValue receiver, JsValue property)
+    {
         if (AbstractOperations.IsNullish(receiver)) throw JsException.TypeError("Cannot access property of null or undefined");
         var key = Builtins.ObjectBuiltins.ToPropertyKey(property);
         var obj = receiver.Data as JsObject;
@@ -183,9 +194,10 @@ public sealed partial class Interpreter
         return value;
     }
 
-    private JsValue Update(UpdateExpr update)
+    private JsValue Update(UpdateExpr update) => Update(update, Resolve(update.Target));
+
+    private static JsValue Update(UpdateExpr update, Reference reference)
     {
-        var reference = Resolve(update.Target);
         var value = AbstractOperations.ToPrimitive(reference.Read());
         if (value.Type != JsType.BigInt) value = JsValue.From(value.ToNumber());
         var increment = update.Op == TokenKind.PlusPlus ? 1 : -1;

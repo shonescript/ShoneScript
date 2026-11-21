@@ -6,12 +6,49 @@ using System.Text;
 
 namespace ShoneJs.Runtime.Builtins;
 
-internal sealed class PromiseBuiltins(JsObject objectPrototype, JsObject arrayPrototype, Action<JsException> attachErrorPrototype)
+internal sealed class PromiseBuiltins(JsObject objectPrototype, JsObject arrayPrototype, Action<JsException> attachErrorPrototype, Action consumeStep)
 {
     private readonly Queue<Action> _jobs = new();
     private readonly JsObject _prototype = new() { Prototype = objectPrototype };
     private JsFunction _constructor = null!;
     private bool _draining;
+    public int MaximumPendingJobs { get; set; } = 100_000;
+
+    internal void Enqueue(Action callback)
+    {
+        if (_jobs.Count >= MaximumPendingJobs) throw new InvalidOperationException("Microtask queue limit exceeded");
+        _jobs.Enqueue(callback);
+    }
+
+    internal JsValue Create(out Action<JsValue> resolve, out Action<JsValue> reject, bool assimilateThenables = true)
+    {
+        var promise = new PromiseObject { Prototype = _prototype };
+        var functions = CreateResolvingFunctions(promise, assimilateThenables);
+        resolve = value => functions.Resolve.Call(JsValue.Undefined, [value]);
+        reject = value => functions.Reject.Call(JsValue.Undefined, [value]);
+        return JsValue.From(promise);
+    }
+
+    internal void Observe(JsValue value, Action<JsValue> fulfill, Action<JsValue> reject)
+    {
+        var promise = (PromiseObject)Resolve(_constructor, value).Data!;
+        Subscribe(promise, new Reaction(null,
+            NewFunction(1, (_, args) => { fulfill(Argument(args, 0)); return JsValue.Undefined; }),
+            NewFunction(1, (_, args) => { reject(Argument(args, 0)); return JsValue.Undefined; })));
+    }
+
+    internal bool TryGetSettled(JsValue value, out JsValue result, out bool rejected)
+    {
+        if (value.Data is PromiseObject { Status: not State.Pending } promise)
+        {
+            result = promise.Result;
+            rejected = promise.Status == State.Rejected;
+            return true;
+        }
+        result = JsValue.Undefined;
+        rejected = false;
+        return false;
+    }
 
     private enum State { Pending, Fulfilled, Rejected }
     private enum Combinator { All, AllSettled, Race }
@@ -24,7 +61,7 @@ internal sealed class PromiseBuiltins(JsObject objectPrototype, JsObject arrayPr
     }
 
     private sealed record Capability(JsValue Promise, JsFunction Resolve, JsFunction Reject);
-    private sealed record Reaction(Capability Capability, JsFunction? Fulfill, JsFunction? Reject);
+    private sealed record Reaction(Capability? Capability, JsFunction? Fulfill, JsFunction? Reject);
 
     public void Install(Action<string, JsValue> setGlobal)
     {
@@ -79,7 +116,7 @@ internal sealed class PromiseBuiltins(JsObject objectPrototype, JsObject arrayPr
         return JsValue.From(promise);
     }
 
-    private (JsFunction Resolve, JsFunction Reject) CreateResolvingFunctions(PromiseObject promise)
+    private (JsFunction Resolve, JsFunction Reject) CreateResolvingFunctions(PromiseObject promise, bool assimilateThenables = true)
     {
         var alreadyResolved = false;
         var resolve = NewFunction(1, (_, args) =>
@@ -87,7 +124,8 @@ internal sealed class PromiseBuiltins(JsObject objectPrototype, JsObject arrayPr
             if (!alreadyResolved)
             {
                 alreadyResolved = true;
-                ResolvePromise(promise, Argument(args, 0));
+                if (assimilateThenables) ResolvePromise(promise, Argument(args, 0));
+                else Settle(promise, State.Fulfilled, Argument(args, 0));
             }
             return JsValue.Undefined;
         });
@@ -125,7 +163,7 @@ internal sealed class PromiseBuiltins(JsObject objectPrototype, JsObject arrayPr
             return;
         }
 
-        _jobs.Enqueue(() =>
+        Enqueue(() =>
         {
             var (resolve, reject) = CreateResolvingFunctions(promise);
             try { then.Call(value, [JsValue.From(resolve), JsValue.From(reject)]); }
@@ -142,10 +180,15 @@ internal sealed class PromiseBuiltins(JsObject objectPrototype, JsObject arrayPr
         promise.Reactions.Clear();
     }
 
-    private void EnqueueReaction(Reaction reaction, State state, JsValue value) => _jobs.Enqueue(() =>
+    private void EnqueueReaction(Reaction reaction, State state, JsValue value) => Enqueue(() =>
     {
         var capability = reaction.Capability;
         var handler = state == State.Fulfilled ? reaction.Fulfill : reaction.Reject;
+        if (capability is null)
+        {
+            handler!.Call(JsValue.Undefined, [value]);
+            return;
+        }
         if (handler is null)
         {
             var settle = state == State.Fulfilled ? capability.Resolve : capability.Reject;
@@ -169,11 +212,18 @@ internal sealed class PromiseBuiltins(JsObject objectPrototype, JsObject arrayPr
             throw JsException.TypeError("Promise.prototype.then requires a promise receiver");
         var capability = NewCapability(PromiseSpecies(promise));
         var reaction = new Reaction(capability, Argument(args, 0).Data as JsFunction, Argument(args, 1).Data as JsFunction);
-        if (promise.Status == State.Pending)
-            promise.Reactions.Add(reaction);
-        else
-            EnqueueReaction(reaction, promise.Status, promise.Result);
+        Subscribe(promise, reaction);
         return capability.Promise;
+    }
+
+    private void Subscribe(PromiseObject promise, Reaction reaction)
+    {
+        if (promise.Status != State.Pending) EnqueueReaction(reaction, promise.Status, promise.Result);
+        else
+        {
+            if (promise.Reactions.Count >= MaximumPendingJobs) throw new InvalidOperationException("Promise reaction limit exceeded");
+            promise.Reactions.Add(reaction);
+        }
     }
 
     private JsValue Finally(JsValue receiver, JsValue[] args)
@@ -249,6 +299,7 @@ internal sealed class PromiseBuiltins(JsObject objectPrototype, JsObject arrayPr
 
             foreach (var item in GetElements(input))
             {
+                consumeStep();
                 var next = resolve.Call(receiver, [item]);
                 if (kind == Combinator.Race)
                 {

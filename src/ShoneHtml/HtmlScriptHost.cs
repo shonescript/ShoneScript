@@ -6,7 +6,7 @@ using ShoneJs.Runtime;
 
 namespace ShoneHtml;
 
-internal sealed class HtmlScriptHost
+internal sealed partial class HtmlScriptHost : IDisposable
 {
     private static readonly HashSet<string> ClassicTypes = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -18,6 +18,9 @@ internal sealed class HtmlScriptHost
 
     private readonly HtmlPage _page;
     private readonly Engine _engine;
+    private readonly HtmlTaskQueue _tasks;
+    private int _dispatchDepth;
+    private bool _checkpointFailed;
     private readonly Action<HtmlScriptError>? _report;
     private readonly ConditionalWeakTable<INode, NodeObject> _wrappers = new();
     private readonly JsObject _window;
@@ -29,7 +32,8 @@ internal sealed class HtmlScriptHost
     {
         _page = page;
         _report = options.OnScriptError;
-        _engine = new Engine(new EngineOptions { MaximumLoopIterations = options.MaximumLoopIterations });
+        _engine = new Engine(new EngineOptions { MaximumLoopIterations = options.MaximumLoopIterations, CancellationToken = page.Lifetime });
+        _tasks = new HtmlTaskQueue(page.Context, page.Lifetime, RunTask);
         var objectPrototype = ((JsObject)_engine.GetGlobal("Object").Data!).Get("prototype").Data as JsObject;
         _nodePrototype = new JsObject { Prototype = objectPrototype };
         _elementPrototype = new JsObject { Prototype = _nodePrototype };
@@ -38,9 +42,11 @@ internal sealed class HtmlScriptHost
         BindNode();
         BindElement();
         BindDocument();
+        BindDomProperties();
         BindListeners(_window);
         _engine.SetGlobal("window", JsValue.From(_window));
         _engine.SetGlobal("document", Wrap(page.Document));
+        BindWebApis();
     }
 
     public static bool IsInlineClassicScript(IElement script) =>
@@ -52,56 +58,40 @@ internal sealed class HtmlScriptHost
     public void RunInlineScript(string text, int index)
     {
         var source = $"script[{index}]";
+        _checkpointFailed = false;
         Run(source, () => _engine.Evaluate(text));
         DrainJobs(source);
     }
 
-    public void DispatchClick(IElement target)
+    public bool DispatchClick(IElement target) => DispatchEvent(target, "click");
+
+    public bool DispatchEvent(IElement target, string type, bool bubbles = true, bool cancelable = true) =>
+        DispatchHostEvent(GetWrapper(target), NewEvent(type, bubbles, cancelable));
+
+    public void DispatchWindowEvent(string type, string? oldUrl = null, string? newUrl = null)
     {
-        var path = new List<JsObject>();
-        for (INode? node = target; node is not null; node = node.Parent)
-            path.Add(GetWrapper(node));
-        if (path[^1] is not NodeObject document || !ReferenceEquals(document.Node, _page.Document))
-            return;
-        path.Add(_window);
+        var evt = NewEvent(type, false, false);
+        if (oldUrl is not null) evt.DefineOwnProperty("oldURL", PropertyDescriptor.Data(JsValue.From(oldUrl)));
+        if (newUrl is not null) evt.DefineOwnProperty("newURL", PropertyDescriptor.Data(JsValue.From(newUrl)));
+        if (type == "popstate") evt.DefineOwnProperty("state", PropertyDescriptor.Data(ReadHistoryState()));
+        DispatchHostEvent(_window, evt);
+    }
 
-        var stopped = false;
-        var current = JsValue.Null;
-        var evt = new JsObject { Prototype = _nodePrototype.Prototype };
-        evt.DefineOwnProperty("type", PropertyDescriptor.Data(JsValue.From("click")));
-        evt.DefineOwnProperty("target", PropertyDescriptor.Data(Wrap(target)));
-        Accessor(evt, "currentTarget", _ => current);
-        Method(evt, "stopPropagation", 0, (_, _) =>
-        {
-            stopped = true;
-            return JsValue.Undefined;
-        });
-        var args = new[] { JsValue.From(evt) };
+    internal void PumpTasks() => _tasks.Pump();
 
-        try
-        {
-            foreach (var receiver in path)
-            {
-                current = JsValue.From(receiver);
-                if (GetListeners(receiver, "click", create: false) is { } listeners)
-                {
-                    foreach (var entry in listeners.ToArray())
-                    {
-                        if (!entry.Removed)
-                            Run("click", () => entry.Function.Call(current, args));
-                    }
-                }
-                if (stopped)
-                    break;
-            }
-            current = JsValue.Null;
-            DrainJobs("click");
-        }
-        finally
-        {
-            current = JsValue.Null;
-            _page.PublishChanges();
-        }
+    private void RunTask(string source, Action action)
+    {
+        if (_page.Lifetime.IsCancellationRequested) return;
+        _checkpointFailed = false;
+        Run(source, action);
+        DrainJobs(source);
+        _page.PublishChanges();
+    }
+
+    public void Dispose()
+    {
+        _tasks.Dispose();
+        DisposeTimers();
     }
 
     private void BindNode()
@@ -111,14 +101,23 @@ internal sealed class HtmlScriptHost
             var node = Node(receiver);
             if (node is IDocument)
                 return;
-            node.TextContent = value.Type is JsType.Null ? "" : value.ToJsString();
+            var text = value.Type is JsType.Null ? "" : value.ToJsString();
+            if (_page.Browser is not null && text.Length != 0)
+            {
+                var textNode = CreateText(text);
+                if (node.NodeType is NodeType.Element or NodeType.DocumentFragment) CheckInsert(node, textNode);
+            }
+            node.TextContent = text;
             _page.MarkDirty();
         });
         Accessor(_nodePrototype, "parentNode", receiver => Wrap(Node(receiver).Parent));
         Accessor(_nodePrototype, "parentElement", receiver => Wrap(Node(receiver).ParentElement));
         Method(_nodePrototype, "appendChild", 1, (receiver, args) =>
         {
-            var result = Node(receiver).AppendChild(Node(Arg(args, 0)));
+            var parent = Node(receiver);
+            var child = Node(Arg(args, 0));
+            CheckInsert(parent, child);
+            var result = parent.AppendChild(child);
             _page.MarkDirty();
             return Wrap(result);
         });
@@ -180,60 +179,28 @@ internal sealed class HtmlScriptHost
         });
         Method(_documentPrototype, "getElementById", 1, (receiver, args) => Wrap(Document(receiver).GetElementById(Arg(args, 0).ToJsString())));
         Method(_documentPrototype, "querySelector", 1, (receiver, args) => Wrap(Document(receiver).QuerySelector(Arg(args, 0).ToJsString())));
-        Method(_documentPrototype, "createElement", 1, (receiver, args) => Wrap(Document(receiver).CreateElement(Arg(args, 0).ToJsString())));
-        Method(_documentPrototype, "createTextNode", 1, (receiver, args) => Wrap(Document(receiver).CreateTextNode(Arg(args, 0).ToJsString())));
+        Method(_documentPrototype, "createElement", 1, (receiver, args) => Wrap(AccountNode(Document(receiver).CreateElement(Arg(args, 0).ToJsString()))));
+        Method(_documentPrototype, "createTextNode", 1, (receiver, args) => Wrap(CreateText(Arg(args, 0).ToJsString())));
     }
 
-    private void BindListeners(JsObject target)
+    private void DrainJobs(string source)
     {
-        Method(target, "addEventListener", 2, (receiver, args) =>
-        {
-            if (Arg(args, 1).Data is JsFunction function)
-            {
-                var listeners = GetListeners(receiver.Data, Arg(args, 0).ToJsString(), create: true);
-                if (listeners is not null && !listeners.Any(entry => ReferenceEquals(entry.Function, function)))
-                    listeners.Add(new Listener(function));
-            }
-            return JsValue.Undefined;
-        });
-        Method(target, "removeEventListener", 2, (receiver, args) =>
-        {
-            if (Arg(args, 1).Data is JsFunction function &&
-                GetListeners(receiver.Data, Arg(args, 0).ToJsString(), create: false) is { } listeners)
-            {
-                var index = listeners.FindIndex(entry => ReferenceEquals(entry.Function, function));
-                if (index >= 0)
-                {
-                    listeners[index].Removed = true;
-                    listeners.RemoveAt(index);
-                }
-            }
-            return JsValue.Undefined;
-        });
+        if (_checkpointFailed) return;
+        var success = false;
+        Run($"{source} Promise jobs", () => { _engine.DrainJobs(); success = true; });
+        _checkpointFailed = !success;
+        if (!success && !_page.Lifetime.IsCancellationRequested && _loadCompletion is { Task.IsCompleted: false } completion)
+            completion.TrySetException(new InvalidOperationException($"Promise checkpoint failed during {source}."));
     }
-
-    // The host currently generates click events only.
-    private List<Listener>? GetListeners(object? target, string type, bool create)
-    {
-        if (target is not NodeObject && !ReferenceEquals(target, _window))
-            throw TypeError("Expected an event target");
-        if (type != "click")
-            return null;
-
-        return target is NodeObject node
-            ? create ? node.ClickListeners ??= [] : node.ClickListeners
-            : create ? _windowListeners ??= [] : _windowListeners;
-    }
-
-    private List<Listener>? _windowListeners;
-
-    private void DrainJobs(string source) => Run($"{source} Promise jobs", _engine.DrainJobs);
 
     private void Run(string source, Action action)
     {
         try
         {
-            action();
+            if (!_page.Lifetime.IsCancellationRequested) action();
+        }
+        catch (OperationCanceledException) when (_page.Lifetime.IsCancellationRequested)
+        {
         }
         catch (Exception error) when (error is JsSyntaxException or InvalidOperationException)
         {
@@ -289,12 +256,5 @@ internal sealed class HtmlScriptHost
     private sealed class NodeObject(INode node) : JsObject
     {
         public INode Node { get; } = node;
-        public List<Listener>? ClickListeners { get; set; }
-    }
-
-    private sealed class Listener(JsFunction function)
-    {
-        public JsFunction Function { get; } = function;
-        public bool Removed { get; set; }
     }
 }

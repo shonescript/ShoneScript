@@ -12,6 +12,7 @@ public sealed class EnvironmentRecord(EnvironmentRecord? parent = null)
         public readonly bool Lexical = lexical;
         public bool Initialized;
         public JsValue Value;
+        public Func<JsValue>? ReadAlias;
     }
 
     private readonly Dictionary<string, Binding> _bindings = new(StringComparer.Ordinal);
@@ -32,6 +33,14 @@ public sealed class EnvironmentRecord(EnvironmentRecord? parent = null)
             throw new JsException(JsValue.From(new JsError("SyntaxError", $"Identifier '{name}' has already been declared")));
     }
 
+    internal void CreateImport(string name, Func<JsValue> read)
+    {
+        Create(name, mutable: false, lexical: true);
+        var binding = _bindings[name];
+        binding.ReadAlias = read;
+        binding.Initialized = true;
+    }
+
     internal void Initialize(string name, JsValue value)
     {
         var binding = _bindings[name];
@@ -49,7 +58,8 @@ public sealed class EnvironmentRecord(EnvironmentRecord? parent = null)
     public JsValue Get(string name)
     {
         var scope = Resolve(name) ?? throw JsException.ReferenceError($"'{name}' is not defined");
-        return scope.GetBinding(name).Value;
+        var binding = scope.GetBinding(name);
+        return binding.ReadAlias is { } read ? read() : binding.Value;
     }
 
     public void Set(string name, JsValue value)

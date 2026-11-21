@@ -151,6 +151,7 @@ public static class ArrayBuiltins
                     CheckSafeLength(next + length);
                     for (long index = 0; index < length; index++, next++)
                     {
+                        Interpreter.ChargeNativeWork();
                         var key = Key(index);
                         if (candidate.HasProperty(key))
                             CreateElement(result, Key(next), candidate.Get(key));
@@ -184,6 +185,7 @@ public static class ArrayBuiltins
         private JsValue ToReversed(JsObject obj, JsValue[] _)
         {
             var length = LengthOf(obj);
+            Interpreter.ChargeNativeWork(length);
             var result = NewArray(length);
             for (long index = 0; index < length; index++)
                 CreateElement(result, Key(index), obj.Get(Key(length - index - 1)));
@@ -197,9 +199,13 @@ public static class ArrayBuiltins
             if (comparator.Type != JsType.Undefined && comparator.Data is not JsFunction)
                 throw JsException.TypeError("Comparator must be callable");
 
-            var values = new List<JsValue>((int)Math.Min(length, int.MaxValue));
+            Interpreter.ChargeNativeWork(length);
+            var values = new List<JsValue>((int)Math.Min(length, 4096));
             for (long index = 0; index < length; index++)
+            {
+                Interpreter.ChargeNativeWork(0);
                 values.Add(obj.Get(Key(index)));
+            }
             var decorated = values.Select((value, index) => (Value: value, Index: index, Text: (string?)null)).ToArray();
             if (comparator.Type == JsType.Undefined)
             {
@@ -241,6 +247,7 @@ public static class ArrayBuiltins
             var itemCount = Math.Max(args.Length - 2, 0);
             var newLength = length - deleteCount + itemCount;
             CheckSafeLength(newLength);
+            Interpreter.ChargeNativeWork(newLength);
             var result = NewArray(newLength);
             long target = 0;
             for (long index = 0; index < start; index++)
@@ -260,6 +267,7 @@ public static class ArrayBuiltins
             if (actualIndex < 0 || actualIndex >= length)
                 throw JsException.RangeError("Invalid index");
             var replacement = Argument(args, 1);
+            Interpreter.ChargeNativeWork(length);
             var result = NewArray(length);
             for (long position = 0; position < length; position++)
                 CreateElement(result, Key(position), position == actualIndex ? replacement : obj.Get(Key(position)));
@@ -282,6 +290,7 @@ public static class ArrayBuiltins
 
             var removed = NewResultArray(obj, deleteCount);
             CopyPresent(obj, start, start + deleteCount, removed);
+            if (itemCount != deleteCount) Interpreter.ChargeNativeWork(length - start - deleteCount + Math.Max(0, deleteCount - itemCount));
             if (itemCount < deleteCount)
             {
                 for (var index = start; index < length - deleteCount; index++)
@@ -320,6 +329,7 @@ public static class ArrayBuiltins
 
             for (long step = 0; step < length; step++)
             {
+                Interpreter.ChargeNativeWork();
                 var index = operation is Iteration.FindLast or Iteration.FindLastIndex ? length - step - 1 : step;
                 var key = Key(index);
                 if (!visitHoles && !obj.HasProperty(key))
@@ -402,11 +412,19 @@ public static class ArrayBuiltins
             var builder = new StringBuilder();
             for (long index = 0; index < length; index++)
             {
+                Interpreter.ChargeNativeWork();
                 if (index > 0)
+                {
+                    Interpreter.ChargeNativeWork(separator.Length / 16);
                     builder.Append(separator);
+                }
                 var value = obj.Get(Key(index));
                 if (!AbstractOperations.IsNullish(value))
-                    builder.Append(ToStringValue(value));
+                {
+                    var text = ToStringValue(value);
+                    Interpreter.ChargeNativeWork(text.Length / 16);
+                    builder.Append(text);
+                }
             }
             return JsValue.From(builder.ToString());
         }
@@ -451,7 +469,10 @@ public static class ArrayBuiltins
         }
         var first = obj.Get("0");
         for (long index = 1; index < length; index++)
+        {
+            Interpreter.ChargeNativeWork();
             MoveProperty(obj, index, index - 1);
+        }
         DeleteProperty(obj, Key(length - 1));
         SetLength(obj, length - 1);
         return first;
@@ -465,7 +486,10 @@ public static class ArrayBuiltins
         if (args.Length != 0)
         {
             for (var index = length; index > 0; index--)
+            {
+                Interpreter.ChargeNativeWork();
                 MoveProperty(obj, index - 1, index + args.Length - 1);
+            }
             for (var index = 0; index < args.Length; index++)
                 SetProperty(obj, Key(index), args[index]);
         }
@@ -478,6 +502,7 @@ public static class ArrayBuiltins
         var length = LengthOf(obj);
         for (long lower = 0; lower < length / 2; lower++)
         {
+            Interpreter.ChargeNativeWork();
             var lowerKey = Key(lower);
             var upperKey = Key(length - lower - 1);
             var hasLower = obj.HasProperty(lowerKey);
@@ -524,6 +549,7 @@ public static class ArrayBuiltins
 
         for (var index = (long)start; index >= 0 && index < length; index += backwards ? -1 : 1)
         {
+            Interpreter.ChargeNativeWork();
             var key = Key(index);
             if (!includes && !obj.HasProperty(key))
                 continue;
@@ -545,6 +571,7 @@ public static class ArrayBuiltins
         var receiver = JsValue.From(obj);
         for (var index = right ? length - 1 : 0; index >= 0 && index < length; index += right ? -1 : 1)
         {
+            Interpreter.ChargeNativeWork();
             var key = Key(index);
             if (!obj.HasProperty(key))
                 continue;
@@ -561,6 +588,7 @@ public static class ArrayBuiltins
     {
         for (var index = start; index < end; index++)
         {
+            Interpreter.ChargeNativeWork();
             var key = Key(index);
             if (source.HasProperty(key))
                 CreateElement(target, Key(index - start), source.Get(key));

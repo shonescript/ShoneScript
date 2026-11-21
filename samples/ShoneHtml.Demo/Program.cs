@@ -1,5 +1,7 @@
 using Aprillz.MewUI;
-using ShoneHtml;
+
+if (BrowserWorker.TryRun(args))
+    return;
 
 const string html = """
     <!doctype html>
@@ -52,4 +54,6 @@ else if (OperatingSystem.IsMacOS())
 else
     throw new PlatformNotSupportedException("The ShoneHtml demo supports Windows, Linux X11, and macOS.");
 
-application.BuildMainWindow(() => HtmlWindow.Create(html)).Run();
+var trustedScripts = args.Contains("--trusted-scripts", StringComparer.Ordinal);
+var address = args.FirstOrDefault(arg => !arg.StartsWith("--", StringComparison.Ordinal));
+application.BuildMainWindow(() => BrowserWindow.Create(address, html, trustedScripts)).Run();
