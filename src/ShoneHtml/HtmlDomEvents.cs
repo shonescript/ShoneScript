@@ -6,10 +6,13 @@ namespace ShoneHtml;
 internal sealed partial class HtmlScriptHost
 {
     private readonly ConditionalWeakTable<JsObject, Dictionary<string, List<Listener>>> _listeners = new();
+    private readonly JsObject _eventTargetPrototype;
     private JsObject _eventPrototype = null!;
 
     private void BindEvent()
     {
+        BindListeners(_eventTargetPrototype);
+        Constructor("EventTarget", 0, _ => JsValue.From(new StandaloneEventTarget { Prototype = _eventTargetPrototype }), _eventTargetPrototype);
         foreach (var type in new[] { "click", "dblclick", "change", "input", "beforeinput", "submit", "reset", "load", "error", "focus", "blur", "focusin", "focusout", "keydown", "keyup", "mousedown", "mouseup", "mousemove", "pointerdown", "pointerup" })
             _elementPrototype.DefineOwnProperty("on" + type, PropertyDescriptor.Data(JsValue.Null, writable: true, configurable: true));
         _eventPrototype = NewObject();
@@ -36,8 +39,37 @@ internal sealed partial class HtmlScriptHost
             Event(e).Stopped = Event(e).Immediate = true;
             return JsValue.Undefined;
         });
-        Constructor("Event", 1, args => JsValue.From(NewEvent(Arg(args, 0).ToJsString(),
+        Constructor("Event", 1, args => JsValue.From(NewEvent(RequiredEventType(args),
             Option(Arg(args, 1), "bubbles"), Option(Arg(args, 1), "cancelable"))), _eventPrototype);
+        var customPrototype = new JsObject { Prototype = _eventPrototype };
+        Accessor(customPrototype, "detail", e => e.Data is DomEvent { Detail: { } detail } ? detail : throw TypeError("Expected a CustomEvent"));
+        Constructor("CustomEvent", 1, args =>
+        {
+            var type = RequiredEventType(args);
+            var options = Arg(args, 1);
+            var detail = (options.Data as JsObject)?.Get("detail") ?? JsValue.Undefined;
+            return JsValue.From(new DomEvent(type, Option(options, "bubbles"), Option(options, "cancelable"))
+            {
+                Prototype = customPrototype,
+                Detail = detail.Type == JsType.Undefined ? JsValue.Null : detail
+            });
+        }, customPrototype);
+        var togglePrototype = new JsObject { Prototype = _eventPrototype };
+        Accessor(togglePrototype, "oldState", e => ((DomEvent)e.Data!).OldState);
+        Accessor(togglePrototype, "newState", e => ((DomEvent)e.Data!).NewState);
+        Accessor(togglePrototype, "source", e => ((DomEvent)e.Data!).Source);
+        Constructor("ToggleEvent", 1, args =>
+        {
+            var type = RequiredEventType(args);
+            var options = Arg(args, 1).Data as JsObject;
+            return JsValue.From(new DomEvent(type, Option(Arg(args, 1), "bubbles"), Option(Arg(args, 1), "cancelable"))
+            {
+                Prototype = togglePrototype,
+                OldState = options?.Get("oldState") ?? JsValue.From(""),
+                NewState = options?.Get("newState") ?? JsValue.From(""),
+                Source = options?.Get("source") ?? JsValue.Null
+            });
+        }, togglePrototype);
     }
 
     private void BindListeners(JsObject target)
@@ -68,8 +100,11 @@ internal sealed partial class HtmlScriptHost
         Method(target, "dispatchEvent", 1, (receiver, args) => JsValue.From(Dispatch(ListenerTarget(receiver), Event(Arg(args, 0)))));
     }
 
-    private JsObject ListenerTarget(JsValue value) => value.Data is NodeObject node ? node
-        : ReferenceEquals(value.Data, _window) ? _window : throw TypeError("Expected an event target");
+    private JsObject ListenerTarget(JsValue value) => value.Data is NodeObject or StandaloneEventTarget or AbortSignal
+        ? (JsObject)value.Data : ReferenceEquals(value.Data, _window) ? _window : throw TypeError("Expected an event target");
+
+    private static string RequiredEventType(JsValue[] args) => args.Length != 0 ? args[0].ToJsString() : throw TypeError("Expected an event type");
+    private sealed class StandaloneEventTarget : JsObject;
 
     private DomEvent NewEvent(string type, bool bubbles, bool cancelable) => new(type, bubbles, cancelable) { Prototype = _eventPrototype };
     private static DomEvent Event(JsValue value) => value.Data as DomEvent ?? throw TypeError("Expected an Event");
@@ -182,6 +217,10 @@ internal sealed partial class HtmlScriptHost
         public string Type { get; } = type;
         public bool Bubbles { get; } = bubbles;
         public bool Cancelable { get; } = cancelable;
+        public JsValue? Detail { get; init; }
+        public JsValue OldState { get; init; } = JsValue.From("");
+        public JsValue NewState { get; init; } = JsValue.From("");
+        public JsValue Source { get; init; } = JsValue.Null;
         public JsValue Target = JsValue.Null;
         public JsValue Current = JsValue.Null;
         public int Phase;

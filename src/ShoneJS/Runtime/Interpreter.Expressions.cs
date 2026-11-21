@@ -384,8 +384,28 @@ public sealed partial class Interpreter
     private JsValue MakeObject(ObjectExpr expression)
     {
         var obj = new JsObject { Prototype = _objectPrototype };
-        foreach (var (key, value) in expression.Properties)
-            obj.DefineOwnProperty(key, PropertyDescriptor.Data(Eval(value), writable: true, enumerable: true, configurable: true));
+        foreach (var property in expression.Properties)
+        {
+            var key = Builtins.ObjectBuiltins.ToPropertyKey(Eval(property.Key));
+            DefineLiteralProperty(obj, key, Eval(property.Value), property.Kind);
+        }
         return JsValue.From(obj);
+    }
+
+    private static void DefineLiteralProperty(JsObject obj, string key, JsValue value, ObjectPropertyKind kind)
+    {
+        if (kind == ObjectPropertyKind.Prototype)
+        {
+            if (value.Data is JsObject prototype) obj.SetPrototypeOf(prototype);
+            else if (value.Type == JsType.Null) obj.SetPrototypeOf(null);
+            return;
+        }
+        var descriptor = kind switch
+        {
+            ObjectPropertyKind.Getter => new PropertyDescriptor { Get = value, Enumerable = true, Configurable = true },
+            ObjectPropertyKind.Setter => new PropertyDescriptor { Set = value, Enumerable = true, Configurable = true },
+            _ => PropertyDescriptor.Data(value, writable: true, enumerable: true, configurable: true)
+        };
+        obj.DefineOwnProperty(key, descriptor);
     }
 }

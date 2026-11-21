@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -51,6 +52,9 @@ internal sealed class RegExpBuiltins
         };
         constructor.DefineOwnProperty("name", PropertyDescriptor.Data(JsValue.From("RegExp"), configurable: true));
         constructor.DefineOwnProperty("prototype", PropertyDescriptor.Data(JsValue.From(_prototype)));
+        var escape = new JsFunction((_, args) => Escape(At(args, 0)), 1) { Prototype = objectPrototype };
+        escape.DefineOwnProperty("name", PropertyDescriptor.Data(JsValue.From("escape"), configurable: true));
+        constructor.DefineOwnProperty("escape", PropertyDescriptor.Data(JsValue.From(escape), writable: true, configurable: true));
         _prototype.DefineOwnProperty("constructor", PropertyDescriptor.Data(JsValue.From(constructor), writable: true, configurable: true));
         var builtinExec = AddMethod("exec", 1, (receiver, args) =>
         {
@@ -99,6 +103,37 @@ internal sealed class RegExpBuiltins
             }
             return Create(pattern.Data is Instance regex ? regex.Definition.Pattern : pattern.Type == JsType.Undefined ? "" : Text(pattern),
                 flags.Type == JsType.Undefined ? "" : Text(flags));
+        }
+    }
+
+    private static JsValue Escape(JsValue value)
+    {
+        if (value.Data is not string text) throw JsException.TypeError("RegExp.escape requires a string");
+        if (text.Length > MaximumOutput) throw JsException.RangeError("RegExp.escape input limit exceeded");
+        Interpreter.ChargeNativeWork(text.Length);
+        var result = new StringBuilder(text.Length);
+        for (var i = 0; i < text.Length; i++)
+        {
+            var ch = text[i];
+            if (i == 0 && char.IsAsciiLetterOrDigit(ch)) AppendHex(ch);
+            else if ("^$\\.*+?()[]{}|/".Contains(ch)) result.Append('\\').Append(ch);
+            else if (",-=<>#&!%:;@~'`\"".Contains(ch) || ch == ' ') AppendHex(ch);
+            else if (ch == '\f') result.Append(@"\f");
+            else if (ch == '\n') result.Append(@"\n");
+            else if (ch == '\r') result.Append(@"\r");
+            else if (ch == '\t') result.Append(@"\t");
+            else if (ch == '\v') result.Append(@"\v");
+            else if (i + 1 < text.Length && char.IsSurrogatePair(ch, text[i + 1])) result.Append(ch).Append(text[++i]);
+            else if (char.IsSurrogate(ch) || char.GetUnicodeCategory(ch) == UnicodeCategory.SpaceSeparator || ch is '\uFEFF' or '\u2028' or '\u2029') AppendHex(ch);
+            else result.Append(ch);
+            if (result.Length > MaximumOutput) throw JsException.RangeError("RegExp.escape output limit exceeded");
+        }
+        return JsValue.From(result.ToString());
+
+        void AppendHex(char ch)
+        {
+            result.Append(ch <= '\u00FF' ? @"\x" : @"\u");
+            result.Append(((int)ch).ToString(ch <= '\u00FF' ? "x2" : "x4", CultureInfo.InvariantCulture));
         }
     }
 
@@ -324,11 +359,17 @@ internal sealed class RegExpBuiltins
         return matches.Length == 0 ? JsValue.Null : JsValue.From(matches);
     }
 
-    internal static JsValue StringReplace(JsValue receiver, JsValue[] args)
+    internal static JsValue StringReplace(JsValue receiver, JsValue[] args) => Replace(receiver, args, all: false);
+
+    internal static JsValue StringReplaceAll(JsValue receiver, JsValue[] args) => Replace(receiver, args, all: true);
+
+    private static JsValue Replace(JsValue receiver, JsValue[] args, bool all)
     {
-        var input = ReceiverText(receiver);
         var search = At(args, 0);
         var regex = search.Data as Instance;
+        if (all && !AbstractOperations.IsNullish(receiver) && regex is not null && !Text(regex.Get("flags")).Contains('g'))
+            throw JsException.TypeError("String.prototype.replaceAll requires a global RegExp");
+        var input = ReceiverText(receiver);
         var needle = regex is null ? Text(search) : null;
         var replacement = At(args, 1);
         var callback = replacement.Data as JsFunction;
@@ -350,8 +391,16 @@ internal sealed class RegExpBuiltins
         else
         {
             Interpreter.ChargeNativeWork((long)input.Length + needle!.Length + 1);
-            var index = input.IndexOf(needle, StringComparison.Ordinal);
-            if (index >= 0) ReplaceMatch(index, needle.Length, null);
+            var start = 0;
+            while (start <= input.Length)
+            {
+                var index = input.IndexOf(needle, start, StringComparison.Ordinal);
+                if (index < 0) break;
+                Interpreter.ChargeNativeWork();
+                ReplaceMatch(index, needle.Length, null);
+                if (!all || index == input.Length) break;
+                start = index + Math.Max(needle.Length, 1);
+            }
         }
         if (!replaced) return JsValue.From(input);
         Append(input.AsSpan(end));

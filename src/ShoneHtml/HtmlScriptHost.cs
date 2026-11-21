@@ -30,6 +30,8 @@ internal sealed partial class HtmlScriptHost : IDisposable
     private readonly JsObject _window;
     private readonly JsObject _nodePrototype;
     private readonly JsObject _elementPrototype;
+    private readonly JsObject _htmlElementPrototype;
+    private readonly JsObject _fragmentPrototype;
     private readonly JsObject _documentPrototype;
     private readonly JsObject _imagePrototype;
     private readonly JsObject _canvasPrototype;
@@ -48,17 +50,22 @@ internal sealed partial class HtmlScriptHost : IDisposable
         _engine = new Engine(engineOptions);
         _tasks = new HtmlTaskQueue(page.Context, page.Lifetime, RunTask);
         var objectPrototype = ((JsObject)_engine.GetGlobal("Object").Data!).Get("prototype").Data as JsObject;
-        _nodePrototype = new JsObject { Prototype = objectPrototype };
+        _eventTargetPrototype = new JsObject { Prototype = objectPrototype };
+        _nodePrototype = new JsObject { Prototype = _eventTargetPrototype };
         _elementPrototype = new JsObject { Prototype = _nodePrototype };
+        _htmlElementPrototype = new JsObject { Prototype = _elementPrototype };
+        _fragmentPrototype = new JsObject { Prototype = _nodePrototype };
         _documentPrototype = new JsObject { Prototype = _nodePrototype };
-        _imagePrototype = new JsObject { Prototype = _elementPrototype };
+        _imagePrototype = new JsObject { Prototype = _htmlElementPrototype };
         _window = (JsObject)_engine.GetGlobal("globalThis").Data!;
         BindNode();
         BindElement();
-        _canvasPrototype = new JsObject { Prototype = _elementPrototype };
+        _canvasPrototype = new JsObject { Prototype = _htmlElementPrototype };
         BindCanvas();
         BindDocument();
         BindDomProperties();
+        BindHtmlElementSemantics();
+        BindDomTree();
         BindListeners(_window);
         _engine.SetGlobal("window", JsValue.From(_window));
         _engine.SetGlobal("document", Wrap(page.Document));
@@ -183,7 +190,6 @@ internal sealed partial class HtmlScriptHost : IDisposable
             _page.MarkDirty();
             return Wrap(result);
         });
-        BindListeners(_nodePrototype);
     }
 
     private void BindElement()
@@ -311,7 +317,9 @@ internal sealed partial class HtmlScriptHost : IDisposable
             IDocument => _documentPrototype,
             IElement element when HtmlCanvas.IsCanvas(element) => _canvasPrototype,
             IHtmlImageElement => _imagePrototype,
+            IElement element when element.NamespaceUri == "http://www.w3.org/1999/xhtml" => GetHtmlElementPrototype(element),
             IElement => _elementPrototype,
+            IDocumentFragment => _fragmentPrototype,
             _ => _nodePrototype
         }
     };
@@ -352,5 +360,17 @@ internal sealed partial class HtmlScriptHost : IDisposable
     private sealed class NodeObject(INode node) : JsObject
     {
         public INode Node { get; } = node;
+        public override string? HostObjectTag => Node switch
+        {
+            IHtmlElement element when element.LocalName is "meter" or "progress" or "output" or "datalist" or "template" or
+                "slot" or "picture" or "track" or "source" or "search" or "menu" or "hgroup" or "mark" or "time" or "ruby" or "wbr" =>
+                Prototype?.Get("constructor").Data is JsFunction known && known.Get("name").Data is string { Length: > 0 } knownName ? knownName : "HTMLElement",
+            IHtmlUnknownElement => "HTMLUnknownElement",
+            IHtmlElement => Prototype?.Get("constructor").Data is JsFunction constructor && constructor.Get("name").Data is string { Length: > 0 } name
+                ? name : "HTMLElement",
+            IDocumentFragment => "DocumentFragment",
+            IDocument => "Document",
+            _ => null
+        };
     }
 }

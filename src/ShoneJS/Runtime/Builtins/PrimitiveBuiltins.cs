@@ -3,6 +3,7 @@
 
 using System.Globalization;
 using System.Numerics;
+using System.Text;
 
 namespace ShoneJs.Runtime.Builtins;
 
@@ -28,8 +29,15 @@ internal sealed class PrimitiveBuiltins
             return JsValue.From(input.Type == JsType.Symbol ? input.ToString()
                 : AbstractOperations.ToPrimitive(input, preferString: true).ToJsString());
         });
+        InstallMethod(_stringPrototype, "at", 1, StringAt);
         InstallMethod(_stringPrototype, "indexOf", 1, StringIndexOf);
+        InstallMethod(_stringPrototype, "isWellFormed", 0, (receiver, _) => WellFormed(receiver, repair: false));
+        InstallMethod(_stringPrototype, "toWellFormed", 0, (receiver, _) => WellFormed(receiver, repair: true));
+        InstallMethod(_stringPrototype, "normalize", 0, Normalize);
+        InstallMethod(_stringPrototype, "padStart", 1, (receiver, args) => Pad(receiver, args, atStart: true));
+        InstallMethod(_stringPrototype, "padEnd", 1, (receiver, args) => Pad(receiver, args, atStart: false));
         InstallMethod(_stringPrototype, "replace", 2, RegExpBuiltins.StringReplace);
+        InstallMethod(_stringPrototype, "replaceAll", 2, RegExpBuiltins.StringReplaceAll);
         InstallMethod(_stringPrototype, "match", 1, regex.StringMatch);
         InstallMethod(_stringPrototype, "split", 2, (receiver, args) => StringSplit(receiver, args, arrayPrototype));
 
@@ -75,6 +83,97 @@ internal sealed class PrimitiveBuiltins
             return JsValue.From(text[(int)index].ToString());
         return _stringPrototype.Get(key, receiver);
     }
+
+    private static string RequireStringReceiver(JsValue receiver, string method)
+    {
+        if (AbstractOperations.IsNullish(receiver)) throw JsException.TypeError($"String.prototype.{method} requires a receiver");
+        return AbstractOperations.ToPrimitive(receiver, preferString: true).ToJsString();
+    }
+
+    private static double ToInteger(JsValue value)
+    {
+        var number = ToNumber(value);
+        return double.IsNaN(number) ? 0 : Math.Truncate(number);
+    }
+
+    private static JsValue StringAt(JsValue receiver, JsValue[] args)
+    {
+        var text = RequireStringReceiver(receiver, "at");
+        var index = ToInteger(At(args, 0));
+        if (index < 0) index += text.Length;
+        return index < 0 || index >= text.Length ? JsValue.Undefined : JsValue.From(text[(int)index].ToString());
+    }
+
+    private static JsValue Pad(JsValue receiver, JsValue[] args, bool atStart)
+    {
+        var text = RequireStringReceiver(receiver, atStart ? "padStart" : "padEnd");
+        var length = ToInteger(At(args, 0));
+        if (length <= text.Length) return JsValue.From(text);
+        var fill = At(args, 1);
+        var padding = fill.Type == JsType.Undefined ? " " : AbstractOperations.ToPrimitive(fill, preferString: true).ToJsString();
+        if (padding.Length == 0) return JsValue.From(text);
+        if (length > 1_048_576) throw JsException.RangeError("String padding result limit exceeded");
+        Interpreter.ChargeNativeWork((long)length);
+        var count = (int)length - text.Length;
+        var prefix = string.Create(count, padding, static (span, source) =>
+        {
+            for (var offset = 0; offset < span.Length;)
+            {
+                var width = Math.Min(source.Length, span.Length - offset);
+                source.AsSpan(0, width).CopyTo(span[offset..]);
+                offset += width;
+            }
+        });
+        return JsValue.From(atStart ? prefix + text : text + prefix);
+    }
+
+    private static JsValue WellFormed(JsValue receiver, bool repair)
+    {
+        var text = RequireStringReceiver(receiver, repair ? "toWellFormed" : "isWellFormed");
+        Interpreter.ChargeNativeWork(text.Length);
+        char[]? repaired = null;
+        for (var i = 0; i < text.Length; i++)
+        {
+            if (IsSurrogatePair(text, i)) { i++; continue; }
+            if (!char.IsSurrogate(text[i])) continue;
+            if (!repair) return JsValue.From(false);
+            repaired ??= text.ToCharArray();
+            repaired[i] = '\uFFFD';
+        }
+        return repair ? JsValue.From(repaired is null ? text : new string(repaired)) : JsValue.From(true);
+    }
+
+    private static JsValue Normalize(JsValue receiver, JsValue[] args)
+    {
+        var text = RequireStringReceiver(receiver, "normalize");
+        var value = At(args, 0);
+        var form = value.Type == JsType.Undefined ? "NFC" : AbstractOperations.ToPrimitive(value, preferString: true).ToJsString();
+        var mode = form switch
+        {
+            "NFC" => NormalizationForm.FormC,
+            "NFD" => NormalizationForm.FormD,
+            "NFKC" => NormalizationForm.FormKC,
+            "NFKD" => NormalizationForm.FormKD,
+            _ => throw JsException.RangeError("Invalid normalization form")
+        };
+        Interpreter.ChargeNativeWork(text.Length);
+
+        // Normalize scalar runs separately so isolated UTF-16 surrogates survive .NET normalization.
+        StringBuilder? result = null;
+        var start = 0;
+        for (var i = 0; i < text.Length; i++)
+        {
+            if (IsSurrogatePair(text, i)) { i++; continue; }
+            if (!char.IsSurrogate(text[i])) continue;
+            result ??= new StringBuilder(text.Length);
+            result.Append(text[start..i].Normalize(mode)).Append(text[i]);
+            start = i + 1;
+        }
+        return JsValue.From(result is null ? text.Normalize(mode) : result.Append(text[start..].Normalize(mode)).ToString());
+    }
+
+    private static bool IsSurrogatePair(string text, int index) =>
+        index + 1 < text.Length && char.IsSurrogatePair(text[index], text[index + 1]);
 
     private static JsValue StringIndexOf(JsValue receiver, JsValue[] args)
     {

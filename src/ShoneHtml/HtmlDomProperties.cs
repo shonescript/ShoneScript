@@ -85,7 +85,7 @@ internal sealed partial class HtmlScriptHost
             if (Element(e) is IHtmlDetailsElement details) SetBooleanAttribute(details, "open", v);
         });
         Accessor(_elementPrototype, "classList", e => JsValue.From(Properties(Element(e)).Classes));
-        Accessor(_elementPrototype, "dataset", e => JsValue.From(Properties(Element(e)).Dataset));
+        Accessor(_htmlElementPrototype, "dataset", e => JsValue.From(Properties(Element(e)).Dataset));
         Accessor(_elementPrototype, "style", e => JsValue.From(Properties(Element(e)).Style), (e, v) => SetStyle(Element(e), v.ToJsString()));
         Method(_elementPrototype, "matches", 1, (e, a) => JsValue.From(Element(e).Matches(Arg(a, 0).ToJsString())));
         Method(_elementPrototype, "closest", 1, (e, a) => Wrap(Element(e).Closest(Arg(a, 0).ToJsString())));

@@ -103,6 +103,8 @@ public sealed record FunctionExpr(List<string> Parameters, BlockStmt Body) : Exp
 }
 public sealed record ArrayExpr(List<Expr> Items) : Expr;
 public sealed record ArrayHoleExpr : Expr;
-public sealed record ObjectExpr(List<(string Key, Expr Value)> Properties) : Expr;
+public enum ObjectPropertyKind { Data, Getter, Setter, Prototype }
+public sealed record ObjectProperty(Expr Key, Expr Value, ObjectPropertyKind Kind = ObjectPropertyKind.Data);
+public sealed record ObjectExpr(List<ObjectProperty> Properties) : Expr;
 public sealed record ConditionalExpr(Expr Test, Expr Then, Expr Else) : Expr;
 public sealed record SequenceExpr(List<Expr> Expressions) : Expr;

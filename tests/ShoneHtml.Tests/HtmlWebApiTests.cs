@@ -7,6 +7,46 @@ namespace ShoneHtml.Tests;
 public sealed class HtmlWebApiTests
 {
     [Fact]
+    public void BrowserDomConstructorsSemanticsAndAbortCombinatorsAreAvailable()
+    {
+        var errors = new List<HtmlScriptError>();
+        using var page = HtmlPage.Parse("""
+            <form id=f><input id=i list=choices required pattern="[a-z]+"><datalist id=choices><option value=x></datalist></form>
+            <template id=t><b>kept inert</b></template><dialog id=d></dialog><script>
+              const input = document.getElementById('i');
+              const form = document.getElementById('f');
+              const choices = document.getElementById('choices');
+              const template = document.getElementById('t');
+              const dialog = document.getElementById('d');
+              if (!(input instanceof HTMLInputElement) || !(dialog instanceof HTMLDialogElement) ||
+                  !(document.createElement('div') instanceof HTMLElement)) throw new Error('HTML brands');
+              if (input.validity.valueMissing !== true || input.checkValidity() !== false || form.reportValidity() !== false) throw new Error('validation');
+              if (input.list !== choices) throw new Error('input.list');
+              if (choices.options.length !== 1) throw new Error('datalist.options ' + choices.options.length);
+              if (!(template.content instanceof DocumentFragment)) throw new Error('template fragment');
+              if (template.content.querySelector('b').textContent !== 'kept inert') throw new Error('template content');
+              if (URL.canParse('/x', 'https://example.test/') !== true || URL.parse('%%%') !== null) throw new Error('URL static methods');
+              const source = AbortSignal.abort('stop');
+              document.title = 'STATIC ABORT';
+              const controller = new AbortController();
+              document.title = 'CONTROLLER';
+              const joined = AbortSignal.any([controller.signal, source]);
+              if (!joined.aborted || joined.reason !== 'stop' || !('timeout' in AbortSignal)) throw new Error('abort signals');
+              document.title = 'ABORT';
+              const parser = new DOMParser();
+              const parsed = parser.parseFromString('<strong>parsed</strong>', 'text/html');
+              document.title = 'PARSED';
+              const serializer = new XMLSerializer();
+              const serialized = serializer.serializeToString(parsed.querySelector('strong'));
+              if (parsed.querySelector('strong').textContent !== 'parsed' || serialized.indexOf('<strong>') < 0) throw new Error('serialization');
+              document.title = 'PASS';
+            </script>
+            """, new() { OnScriptError = errors.Add });
+        Assert.True(errors.Count == 0, $"{page.Title}: {string.Join(Environment.NewLine, errors.Select(error => error.Exception.Message))}");
+        Assert.Equal("PASS", page.Title);
+    }
+
+    [Fact]
     public void ReplaceWithMovesNodesAndInsertsLiteralTextInArgumentOrder()
     {
         var errors = new List<HtmlScriptError>();

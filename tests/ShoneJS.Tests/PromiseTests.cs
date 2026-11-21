@@ -95,6 +95,15 @@ public class PromiseTests
     public void CombinatorsSettleAndKeepInputOrder(string script, string expected) => Assert.Equal(expected, RunRecorded(script));
 
     [Theory]
+    [InlineData("Promise.any([Promise.reject('first'), Promise.resolve('winner')]).then(record);", "winner")]
+    [InlineData("Promise.any([Promise.reject('a'), Promise.reject('b')]).catch(function (e) { record(e.name + ':' + e.errors.join(',')); });", "AggregateError:a,b")]
+    [InlineData("Promise.any([]).catch(function (e) { record(e.name + ':' + e.errors.length); });", "AggregateError:0")]
+    [InlineData("let c = Promise.withResolvers(); c.promise.then(record); c.resolve(7);", "7")]
+    [InlineData("Promise.try(function (a) { return a + 1; }, 4).then(record);", "5")]
+    [InlineData("Promise.try(function () { throw 'x'; }).catch(record);", "x")]
+    public void NewStaticHelpersSettleCorrectly(string script, string expected) => Assert.Equal(expected, RunRecorded(script));
+
+    [Theory]
     [InlineData("Promise(function () {});")]
     [InlineData("new Promise();")]
     [InlineData("Promise.prototype.then(function () {});")]

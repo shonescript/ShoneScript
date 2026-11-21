@@ -87,6 +87,12 @@ public static class ObjectBuiltins
             DefineMethod(constructor, "entries", 1, args => CollectEnumerable(args, (obj, key) => MakeArray([JsValue.From(key), obj.Get(key)])));
             DefineMethod(constructor, "freeze", 1, args => SetIntegrityLevel(Argument(args, 0), freeze: true));
             DefineMethod(constructor, "getOwnPropertyDescriptor", 2, args => GetOwnPropertyDescriptor(ToObject(Argument(args, 0)), Argument(args, 1)));
+            DefineMethod(constructor, "hasOwn", 2, args =>
+            {
+                var value = Argument(args, 0);
+                if (AbstractOperations.IsNullish(value)) throw JsException.TypeError("Object.hasOwn called on null or undefined");
+                return JsValue.From(ToObject(value).HasOwn(ToPropertyKey(Argument(args, 1))));
+            });
             DefineMethod(constructor, "getOwnPropertyDescriptors", 1, args => GetOwnPropertyDescriptors(ToObject(Argument(args, 0))));
             DefineMethod(constructor, "getOwnPropertyNames", 1, args => OwnKeys(ToObject(Argument(args, 0))));
             DefineMethod(constructor, "getOwnPropertySymbols", 1, args =>
@@ -213,6 +219,7 @@ public static class ObjectBuiltins
             {
                 JsArray => "Array",
                 JsError => "Error",
+                JsObject { HostObjectTag: { } hostTag } => hostTag,
                 _ => type.ToString()
             };
             return JsValue.From($"[object {tag}]");

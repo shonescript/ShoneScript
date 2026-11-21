@@ -13,8 +13,10 @@ internal sealed partial class HtmlScriptHost
         BindEnvironment();
         BindEvent();
         BindNavigation();
+        BindDynamicFunction();
         BindUrl();
         BindFetch();
+        BindScheduling();
         Global("setTimeout", 2, (_, args) => ScheduleTimer(args, repeat: false));
         Global("setInterval", 2, (_, args) => ScheduleTimer(args, repeat: true));
         Global("clearTimeout", 1, (_, args) => { ClearTimer((int)Arg(args, 0).ToNumber()); return JsValue.Undefined; });
@@ -61,6 +63,7 @@ internal sealed partial class HtmlScriptHost
     private void Constructor(string name, int arity, Func<JsValue[], JsValue> create, JsObject? prototype = null, bool callable = false)
     {
         var function = new JsFunction((_, args) => callable ? create(args) : throw TypeError($"Use new {name}()"), arity, create);
+        function.DefineOwnProperty("name", PropertyDescriptor.Data(JsValue.From(name), configurable: true));
         if (prototype is not null)
         {
             function.DefineOwnProperty("prototype", PropertyDescriptor.Data(JsValue.From(prototype)));

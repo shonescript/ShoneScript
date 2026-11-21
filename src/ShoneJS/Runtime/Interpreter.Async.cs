@@ -343,9 +343,13 @@ public sealed partial class Interpreter
             }
             case ObjectExpr obj:
             {
-                var values = new List<(string, Expr)>();
-                foreach (var (key, value) in obj.Properties) values.Add((key, new LiteralExpr(await EvalAsync(value))));
-                return MakeObject(new ObjectExpr(values));
+                var result = new JsObject { Prototype = _objectPrototype };
+                foreach (var property in obj.Properties)
+                {
+                    var key = Builtins.ObjectBuiltins.ToPropertyKey(await EvalAsync(property.Key));
+                    DefineLiteralProperty(result, key, await EvalAsync(property.Value), property.Kind);
+                }
+                return JsValue.From(result);
             }
             case TemplateExpr template:
             {

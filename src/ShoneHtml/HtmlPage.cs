@@ -496,6 +496,9 @@ public sealed partial class HtmlPage : IDisposable
             SendRendererInput(form, HtmlRendererInputKind.Submit);
             return Task.CompletedTask;
         }
+        if (dispatch && !form.HasAttribute("novalidate") && submitter?.HasAttribute("formnovalidate") != true &&
+            _scripts?.ValidateForm(form, report: true) == false)
+            return Task.CompletedTask;
         if (Browser is null && RendererContext is null || dispatch && !DispatchEvent(form, "submit", cancelable: true) ||
             HtmlForms.CreateRequest(this, form, submitter) is not { } request)
             return Task.CompletedTask;

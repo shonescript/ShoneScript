@@ -23,6 +23,8 @@ public class JsObject
         }
     }
 
+    public virtual string? HostObjectTag => null;
+
     public virtual JsObject? GetPrototypeOf() => _prototype;
     internal virtual bool HasOrdinaryPrototypeLookup => true;
 

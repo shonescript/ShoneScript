@@ -258,8 +258,15 @@ public sealed class HtmlCompatibilityReportTests(ITestOutputHelper output)
                     });
                     Assert.All(rows, row => Assert.Contains(row.GetAttribute("data-r"), new[] { "y", "p", "n" }));
                     output.WriteLine($"{score} / {max}, {rows.Length} settled probes");
-                    foreach (var row in rows)
-                        output.WriteLine($"{row.GetAttribute("data-r")}\t{row.QuerySelector(".h5-name")?.TextContent.Trim()}");
+                    foreach (var group in groups)
+                    {
+                        var probes = group.QuerySelectorAll(".h5-row");
+                        output.WriteLine($"{group.QuerySelector("summary")!.TextContent.Trim()} " +
+                            $"[supported={probes.Count(row => row.GetAttribute("data-r") == "y")}, " +
+                            $"partial={probes.Count(row => row.GetAttribute("data-r") == "p")}, total={probes.Length}]");
+                        foreach (var row in probes)
+                            output.WriteLine($"{row.GetAttribute("data-r")}\t{row.QuerySelector(".h5-name")?.TextContent.Trim()}");
+                    }
                     firstRow = rows[0];
                     return Task.CompletedTask;
                 }).WaitAsync(TestTimeout);

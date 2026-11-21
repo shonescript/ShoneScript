@@ -55,13 +55,26 @@ internal sealed partial class HtmlScriptHost
         Method(prototype, "toJSON", 0, (e, _) => JsValue.From(AsUrl(e).Address.AbsoluteUri));
         Constructor("URL", 1, a =>
         {
-            Uri? address = null;
-            var input = Arg(a, 0).ToJsString();
-            if (Arg(a, 1).Type == JsType.Undefined) Uri.TryCreate(input, UriKind.Absolute, out address);
-            else if (Uri.TryCreate(a[1].ToJsString(), UriKind.Absolute, out var baseAddress)) Uri.TryCreate(baseAddress, input, out address);
-            if (address is null) throw TypeError("Invalid URL");
-            return JsValue.From(new UrlObject(address, _paramsPrototype) { Prototype = prototype });
+            if (a.Length == 0) throw TypeError("URL requires a URL argument");
+            var address = ParseUrl(a) ?? throw TypeError("Invalid URL");
+            return WrapUrl(address);
         }, prototype);
+        var constructor = (JsObject)_engine.GetGlobal("URL").Data!;
+        Method(constructor, "canParse", 1, (_, a) => a.Length == 0
+            ? throw TypeError("URL.canParse requires a URL argument") : JsValue.From(ParseUrl(a) is not null));
+        Method(constructor, "parse", 1, (_, a) => a.Length == 0
+            ? throw TypeError("URL.parse requires a URL argument") : ParseUrl(a) is { } address ? WrapUrl(address) : JsValue.Null);
+
+        JsValue WrapUrl(Uri address) => JsValue.From(new UrlObject(address, _paramsPrototype) { Prototype = prototype });
+    }
+
+    private static Uri? ParseUrl(JsValue[] args)
+    {
+        var input = args[0].ToJsString();
+        if (Arg(args, 1).Type == JsType.Undefined)
+            return Uri.TryCreate(input, UriKind.Absolute, out var absolute) ? absolute : null;
+        return Uri.TryCreate(args[1].ToJsString(), UriKind.Absolute, out var baseAddress) &&
+            Uri.TryCreate(baseAddress, input, out var resolved) ? resolved : null;
     }
 
     private UrlParams CreateParams(JsValue input)

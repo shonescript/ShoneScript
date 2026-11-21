@@ -51,7 +51,7 @@ internal sealed class PromiseBuiltins(JsObject objectPrototype, JsObject arrayPr
     }
 
     private enum State { Pending, Fulfilled, Rejected }
-    private enum Combinator { All, AllSettled, Race }
+    private enum Combinator { All, AllSettled, Any, Race }
 
     private sealed class PromiseObject : JsObject
     {
@@ -86,7 +86,39 @@ internal sealed class PromiseBuiltins(JsObject objectPrototype, JsObject arrayPr
         });
         DefineMethod(_constructor, "all", 1, (receiver, args) => Combine(receiver, Argument(args, 0), Combinator.All));
         DefineMethod(_constructor, "allSettled", 1, (receiver, args) => Combine(receiver, Argument(args, 0), Combinator.AllSettled));
+        DefineMethod(_constructor, "any", 1, (receiver, args) => Combine(receiver, Argument(args, 0), Combinator.Any));
+        DefineMethod(_constructor, "withResolvers", 0, (receiver, _) =>
+        {
+            var capability = NewCapability(RequireConstructorObject(receiver));
+            var result = new JsObject { Prototype = objectPrototype };
+            result.DefineOwnProperty("promise", PropertyDescriptor.Data(capability.Promise, enumerable: true));
+            result.DefineOwnProperty("resolve", PropertyDescriptor.Data(JsValue.From(capability.Resolve), enumerable: true));
+            result.DefineOwnProperty("reject", PropertyDescriptor.Data(JsValue.From(capability.Reject), enumerable: true));
+            return JsValue.From(result);
+        });
+        DefineMethod(_constructor, "try", 1, (receiver, args) =>
+        {
+            var capability = NewCapability(RequireConstructorObject(receiver));
+            try
+            {
+                var callback = RequireFunction(Argument(args, 0), "Promise.try callback is not callable");
+                capability.Resolve.Call(JsValue.Undefined, [callback.Call(JsValue.Undefined, args.Skip(1).ToArray())]);
+            }
+            catch (JsException error) { capability.Reject.Call(JsValue.Undefined, [ErrorValue(error)]); }
+            return capability.Promise;
+        });
         DefineMethod(_constructor, "race", 1, (receiver, args) => Combine(receiver, Argument(args, 0), Combinator.Race));
+        var aggregate = new JsFunction(_ => throw JsException.TypeError("AggregateError requires new"), 2)
+        {
+            NativeConstruct = args =>
+            {
+                var error = new JsError("AggregateError", Argument(args, 1).Type == JsType.Undefined ? "" : Argument(args, 1).ToJsString());
+                error.Set("errors", Argument(args, 0).Type == JsType.Undefined ? JsValue.From(new JsArray { Prototype = arrayPrototype }) : Argument(args, 0));
+                return JsValue.From(error);
+            }
+        };
+        DefineName(aggregate, "AggregateError");
+        setGlobal("AggregateError", JsValue.From(aggregate));
         setGlobal("Promise", JsValue.From(_constructor));
     }
 
@@ -294,7 +326,15 @@ internal sealed class PromiseBuiltins(JsObject objectPrototype, JsObject arrayPr
             void FinishElement()
             {
                 if (--remaining == 0)
-                    capability.Resolve.Call(JsValue.Undefined, [JsValue.From(results)]);
+                {
+                    if (kind == Combinator.Any)
+                    {
+                        var error = new JsError("AggregateError", "All promises were rejected");
+                        error.Set("errors", JsValue.From(results));
+                        capability.Reject.Call(JsValue.Undefined, [JsValue.From(error)]);
+                    }
+                    else capability.Resolve.Call(JsValue.Undefined, [JsValue.From(results)]);
+                }
             }
 
             foreach (var item in GetElements(input))
@@ -316,6 +356,11 @@ internal sealed class PromiseBuiltins(JsObject objectPrototype, JsObject arrayPr
                     if (alreadyCalled) return JsValue.Undefined;
                     alreadyCalled = true;
                     var value = Argument(args, 0);
+                    if (kind == Combinator.Any && !rejected)
+                    {
+                        capability.Resolve.Call(JsValue.Undefined, [value]);
+                        return JsValue.Undefined;
+                    }
                     if (kind == Combinator.AllSettled)
                     {
                         var record = new JsObject { Prototype = objectPrototype };
@@ -329,7 +374,7 @@ internal sealed class PromiseBuiltins(JsObject objectPrototype, JsObject arrayPr
                 }
 
                 var onFulfilled = NewFunction(1, (_, args) => StoreResult(false, args));
-                var onRejected = kind == Combinator.AllSettled
+                var onRejected = kind is Combinator.AllSettled or Combinator.Any
                     ? NewFunction(1, (_, args) => StoreResult(true, args))
                     : capability.Reject;
                 InvokeThen(next, JsValue.From(onFulfilled), JsValue.From(onRejected));

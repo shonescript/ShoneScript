@@ -657,34 +657,53 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, ParseGoal goal =
 
     private ObjectExpr ObjectLiteral()
     {
-        var properties = new List<(string Key, Expr Value)>();
+        var properties = new List<ObjectProperty>();
         var hasProto = false;
         while (Current.Kind != TokenKind.RightBrace)
         {
-            var key = Take();
-            if (!IsIdentifierName(key) && key.Kind is not (TokenKind.Number or TokenKind.String))
-                throw Error("Expected property name", key);
-            var isAsyncMethod = key.Kind == TokenKind.Identifier && key.Text == "async" && !LineBreak &&
-                (IsIdentifierName(Current) || Current.Kind is TokenKind.String or TokenKind.Number) && PeekToken(1).Kind == TokenKind.LeftParen;
-            if (isAsyncMethod) key = Take();
-            if (key.Kind == TokenKind.String) ValidateString(key);
-            var name = key.Kind == TokenKind.Number ? Number(key).ToString("G", CultureInfo.InvariantCulture) : key.Text;
-            Expr value;
-            if (Match(TokenKind.Colon))
+            var start = Current;
+            var kind = ObjectPropertyKind.Data;
+            var isAsyncMethod = false;
+            if (start.Kind == TokenKind.Identifier &&
+                (IsIdentifierName(PeekToken(1)) || PeekToken(1).Kind is TokenKind.String or TokenKind.Number or TokenKind.LeftBracket))
             {
-                if (name == "__proto__")
+                if (start.Text == "get") kind = ObjectPropertyKind.Getter;
+                if (start.Text == "set") kind = ObjectPropertyKind.Setter;
+                isAsyncMethod = start.Text == "async" && !PeekToken(1).HasLineTerminatorBefore;
+                if (isAsyncMethod || kind != ObjectPropertyKind.Data) Take();
+            }
+            var key = Take();
+            var computed = key.Kind == TokenKind.LeftBracket;
+            Expr name;
+            if (computed)
+            {
+                name = Expression(1);
+                Need(TokenKind.RightBracket);
+            }
+            else if (key.Kind == TokenKind.String) name = StringLiteral(key) with { Span = key.Span };
+            else if (key.Kind == TokenKind.Number) name = new LiteralExpr(Number(key)) { Span = key.Span };
+            else if (IsIdentifierName(key)) name = new LiteralExpr(key.Text) { Span = key.Span };
+            else throw Error("Expected property name", key);
+
+            Expr value;
+            if (!isAsyncMethod && kind == ObjectPropertyKind.Data && Match(TokenKind.Colon))
+            {
+                if (!computed && key.Text == "__proto__")
                 {
                     if (hasProto) throw Error("Duplicate __proto__ property", key);
                     hasProto = true;
+                    kind = ObjectPropertyKind.Prototype;
                 }
                 value = Expression(1);
             }
-            else if (Current.Kind == TokenKind.LeftParen)
+            else if (Current.Kind == TokenKind.LeftParen || typeScript && Current.Kind == TokenKind.Less)
             {
                 var typeParameters = typeScript && Current.Kind == TokenKind.Less ? ParseTypeParameters() : [];
                 var parameters = Parameters();
                 var parameterTypes = _lastParameterTypes.ToArray();
                 var returnType = typeScript && Match(TokenKind.Colon) ? ParseType() : null;
+                if (kind == ObjectPropertyKind.Getter && parameters.Count != 0 || kind == ObjectPropertyKind.Setter && parameters.Count != 1)
+                    throw Error("Invalid accessor parameter count", start);
                 var body = FunctionBody(null, parameters, isAsyncMethod);
                 if (parameters.Select(parameter => parameter.Text).Distinct(StringComparer.Ordinal).Count() != parameters.Count)
                     throw Error("Duplicate method parameters", key);
@@ -698,9 +717,10 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, ParseGoal goal =
                     Span = SpanFrom(key.Span.Start)
                 };
             }
-            else if (key.Kind == TokenKind.Identifier) value = Identifier(key) with { Span = key.Span };
-            else throw Error("Expected colon after property name", Current);
-            properties.Add((name, value));
+            else if (!isAsyncMethod && kind == ObjectPropertyKind.Data && key.Kind == TokenKind.Identifier)
+                value = Identifier(key) with { Span = key.Span };
+            else throw Error("Expected property initializer or method", Current);
+            properties.Add(new ObjectProperty(name, value, kind));
             if (!Match(TokenKind.Comma)) break;
         }
         Need(TokenKind.RightBrace);

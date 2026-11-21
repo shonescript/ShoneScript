@@ -35,23 +35,7 @@ internal sealed partial class HtmlScriptHost
         });
         Constructor("Headers", 0, a => JsValue.From(CreateHeaders(Arg(a, 0))), _headersPrototype);
 
-        _signalPrototype = NewObject();
-        Accessor(_signalPrototype, "aborted", e => JsValue.From(AsSignal(e).Canceled));
-        Accessor(_signalPrototype, "reason", e => AsSignal(e).Reason);
-        Method(_signalPrototype, "throwIfAborted", 0, (e, _) => { var signal = AsSignal(e); if (signal.Canceled) throw new JsException(signal.Reason); return JsValue.Undefined; });
-        var controllerPrototype = NewObject();
-        Accessor(controllerPrototype, "signal", e => JsValue.From(AsController(e).Signal));
-        Method(controllerPrototype, "abort", 0, (e, a) =>
-        {
-            var signal = AsController(e).Signal;
-            if (!signal.Canceled)
-            {
-                signal.Reason = Arg(a, 0).Type == JsType.Undefined ? Error("AbortError", "The operation was aborted") : a[0];
-                signal.Cancel();
-            }
-            return JsValue.Undefined;
-        });
-        Constructor("AbortController", 0, _ => JsValue.From(new AbortController(NewSignal()) { Prototype = controllerPrototype }), controllerPrototype);
+        BindAbort();
 
         _requestPrototype = NewObject();
         Accessor(_requestPrototype, "url", e => JsValue.From(AsRequest(e).Address.AbsoluteUri));
@@ -337,6 +321,12 @@ internal sealed partial class HtmlScriptHost
         public CancellationToken Token => (_source ??= new CancellationTokenSource()).Token;
         public bool Canceled => _source?.IsCancellationRequested == true;
         public JsValue Reason = JsValue.Undefined;
-        public void Cancel() => (_source ??= new CancellationTokenSource()).Cancel();
+        public AbortSignal[]? Sources;
+        public List<WeakReference<AbortSignal>>? Dependents;
+        public void Cancel(JsValue reason)
+        {
+            Reason = reason;
+            (_source ??= new CancellationTokenSource()).Cancel();
+        }
     }
 }

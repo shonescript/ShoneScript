@@ -254,6 +254,7 @@ internal sealed class HtmlStyles
         "optional" => CanRequire(element) && !element.HasAttribute("required"),
         "focus" or "focus-visible" => ReferenceEquals(_focused, element),
         "focus-within" => Contains(element, _focused),
+        "popover-open" => element.HasAttribute("popover") && element.HasAttribute("open"),
         "hover" => Contains(element, _hovered),
         "active" => Contains(element, _active),
         "link" or "any-link" => element.LocalName is "a" or "area" && element.HasAttribute("href"),
@@ -569,7 +570,7 @@ internal sealed class HtmlStyles
             return rule.Parts.All(part => ValidName(part.Tag) && part.Ids.All(ValidName) && part.Classes.All(ValidName) &&
                 part.Attributes.All(attribute => ValidName(attribute.Name) && attribute.Flag != 's') &&
                 part.Pseudos.All(pseudo => pseudo is "checked" or "disabled" or "enabled" or "required" or "optional" or
-                    "focus" or "focus-within" or "hover" or "active" or "link" or "any-link" or "root" or
+                    "focus" or "focus-within" or "popover-open" or "hover" or "active" or "link" or "any-link" or "root" or
                     "first-child" or "last-child" or "only-child"));
         }
         if (text.Length < 3 || text[0] != '(' || text[^1] != ')') return false;
