@@ -1,4 +1,7 @@
+using System.Text;
 using AngleSharp.Dom;
+using AngleSharp.Html.Parser;
+using ShoneJs.Runtime;
 
 namespace ShoneHtml;
 
@@ -61,5 +64,24 @@ internal sealed partial class HtmlScriptHost
         AccountNode(staging, includeRoot: false);
         foreach (var child in element.ChildNodes.ToArray()) element.RemoveChild(child);
         foreach (var child in staging.ChildNodes.ToArray()) element.AppendChild(child);
+    }
+
+    private void SetOuterHtml(IElement element, string html)
+    {
+        if (element.Parent is not { } parent) return;
+        if (parent is IDocument)
+            throw new JsException(JsValue.From(new JsError("NoModificationAllowedError", "Cannot replace an element whose parent is the document")));
+        if (_page.Browser is { } browser && (html.Length > browser.Options.MaximumResponseBytes ||
+            Encoding.UTF8.GetByteCount(html) > browser.Options.MaximumResponseBytes))
+            throw TypeError("Markup exceeds the page size limit");
+
+        // A fragment parent uses an HTML body as its parsing context, not the replaced element.
+        var context = parent as IElement ?? _page.Document.CreateElement("body");
+        var staging = _page.Document.CreateDocumentFragment();
+        foreach (var child in new HtmlParser().ParseFragment(html, context).ToArray()) staging.AppendChild(child);
+        CheckInsert(parent, staging);
+        AccountNode(staging, includeRoot: false);
+        parent.ReplaceChild(staging, element);
+        _page.MarkDirty();
     }
 }

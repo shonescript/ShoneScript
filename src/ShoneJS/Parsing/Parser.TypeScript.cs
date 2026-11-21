@@ -88,7 +88,7 @@ public sealed partial class Parser
         return null;
     }
 
-    private Token PeekToken(int distance) => tokens[Math.Min(_index + distance, tokens.Count - 1)];
+    private Token PeekToken(int distance) => TokenAt(_index + distance);
 
     // Only the parameter head is speculative. Errors after '=>' belong to the arrow body.
     private bool TryArrow(out Expr arrow)

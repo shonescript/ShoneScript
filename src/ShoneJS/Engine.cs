@@ -92,7 +92,7 @@ public sealed class Engine
     {
         using var linked = LinkParsingCancellation(source, cancellationToken);
         var token = linked?.Token ?? (cancellationToken.CanBeCanceled ? cancellationToken : Options.CancellationToken);
-        var parser = new Parser(new Lexer(source, token).Scan(), forceStrict: forceStrict, cancellationToken: token);
+        var parser = new Parser(new Lexer(source, token), forceStrict: forceStrict, cancellationToken: token);
         var statements = parser.Parse();
         return new ParsedScript(statements, parser.IsStrict);
     }
@@ -118,7 +118,7 @@ public sealed class Engine
     {
         using var linked = LinkParsingCancellation(source, cancellationToken);
         var token = linked?.Token ?? (cancellationToken.CanBeCanceled ? cancellationToken : Options.CancellationToken);
-        return new Parser(new Lexer(source, token).Scan(), ParseGoal.Module, cancellationToken: token).ParseModule();
+        return new Parser(new Lexer(source, token), ParseGoal.Module, cancellationToken: token).ParseModule();
     }
 
     /// <summary>Registers a module on the engine owner thread before evaluating its graph.</summary>
@@ -160,7 +160,7 @@ public sealed class Engine
     {
         using var linked = LinkParsingCancellation(source, default);
         var token = Options.CancellationToken;
-        var parser = new Parser(new Lexer(source, token).Scan(), typeScript: true, cancellationToken: token);
+        var parser = new Parser(new Lexer(source, token), typeScript: true, cancellationToken: token);
         var statements = parser.ParseTypeScript();
         return new CheckedTypeScript(new ParsedScript(statements, parser.IsStrict));
     }

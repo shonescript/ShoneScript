@@ -27,6 +27,8 @@ public sealed partial class Interpreter
             _ => throw new NotSupportedException("Unsupported literal")
         },
         BigIntExpr integer => JsValue.From(integer.Value),
+        RegExpLiteralExpr { Definition: { } definition } => _regularExpressions.CreateLiteral(definition),
+        RegExpLiteralExpr regex => _regularExpressions.CreateLiteral(regex.Pattern, regex.Flags),
         ThisExpr => _this,
         ImportMetaExpr => JsValue.From(_activeModule!.Meta),
         IdentifierExpr or MemberExpr or OptionalChainExpr => Resolve(expression).Read(),
@@ -98,7 +100,7 @@ public sealed partial class Interpreter
         var key = Builtins.ObjectBuiltins.ToPropertyKey(property);
         var obj = receiver.Data as JsObject;
         return new Reference(
-            () => obj is null ? GetPrimitiveProperty(receiver, key) : obj.Get(key, receiver),
+            () => obj is null ? _primitives.GetProperty(receiver, key) : obj.Get(key, receiver),
             value =>
             {
                 if ((obj is null || !obj.Set(key, value, receiver)) && _strict)
@@ -142,26 +144,6 @@ public sealed partial class Interpreter
 
     private static Reference ValueReference(JsValue value) => new(() => value,
         _ => throw new InvalidOperationException("Invalid assignment target"), () => true, JsValue.Undefined);
-
-    private static JsValue GetPrimitiveProperty(JsValue receiver, string key)
-    {
-        if (receiver.Data is not string text) return JsValue.Undefined;
-        if (key == "length") return JsValue.From((double)text.Length);
-        if (key == "indexOf") return JsValue.From(StringIndexOf);
-        if (uint.TryParse(key, out var index) && index < text.Length && key == index.ToString(System.Globalization.CultureInfo.InvariantCulture))
-            return JsValue.From(text[(int)index].ToString());
-        return JsValue.Undefined;
-    }
-
-    private static readonly JsFunction StringIndexOf = new((receiver, args) =>
-    {
-        if (AbstractOperations.IsNullish(receiver)) throw JsException.TypeError("String.prototype.indexOf requires a receiver");
-        var text = receiver.ToJsString();
-        var search = (args.Length == 0 ? JsValue.Undefined : args[0]).ToJsString();
-        var number = args.Length < 2 ? 0 : args[1].ToNumber();
-        var position = double.IsNaN(number) ? 0 : (int)Math.Clamp(Math.Truncate(number), 0, text.Length);
-        return JsValue.From((double)text.IndexOf(search, position, StringComparison.Ordinal));
-    }, 1);
 
     private JsValue Assign(Expr target, Expr expression, TokenKind? op = null)
     {

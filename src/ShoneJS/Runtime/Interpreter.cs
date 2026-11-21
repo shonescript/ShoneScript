@@ -12,7 +12,9 @@ public sealed partial class Interpreter
     private readonly JsObject _globalObject = new();
     private readonly JsObject _objectPrototype;
     private readonly JsArray _arrayPrototype;
+    private readonly Builtins.PrimitiveBuiltins _primitives;
     private readonly Builtins.PromiseBuiltins _promises;
+    private readonly Builtins.RegExpBuiltins _regularExpressions;
     private readonly Dictionary<string, JsObject> _errorPrototypes = new(StringComparer.Ordinal);
     private EnvironmentRecord _env;
     private EnvironmentRecord _varEnv;
@@ -42,6 +44,7 @@ public sealed partial class Interpreter
         _globalObject.Prototype = _objectPrototype;
         _arrayPrototype = Builtins.ArrayBuiltins.Install(SetGlobal, _objectPrototype);
         Builtins.JsonBuiltins.Install(SetGlobal, _objectPrototype, _arrayPrototype);
+        _regularExpressions = new Builtins.RegExpBuiltins(SetGlobal, _objectPrototype, _arrayPrototype);
         Builtins.ProxyBuiltins.Install(SetGlobal, _objectPrototype);
         _this = JsValue.From(_globalObject);
         foreach (var (name, value) in new[] { ("undefined", JsValue.Undefined), ("NaN", JsValue.From(double.NaN)), ("Infinity", JsValue.From(double.PositiveInfinity)) })
@@ -56,19 +59,7 @@ public sealed partial class Interpreter
             Console.WriteLine(string.Join(" ", args.Select(x => x.ToJsString())));
             return JsValue.Undefined;
         })));
-        SetGlobal("String", JsValue.From(new JsFunction(args =>
-        {
-            if (args.Length == 0) return JsValue.From("");
-            var input = args[0];
-            return JsValue.From(input.Type == JsType.Symbol ? input.ToString()
-                : AbstractOperations.ToPrimitive(input, preferString: true).ToJsString());
-        }, 1)));
-        SetGlobal("Number", JsValue.From(new JsFunction(args =>
-        {
-            if (args.Length == 0) return JsValue.From(0d);
-            var input = AbstractOperations.ToPrimitive(args[0]);
-            return JsValue.From(input.Data is BigInt integer ? (double)integer : input.ToNumber());
-        }, 1)));
+        _primitives = new Builtins.PrimitiveBuiltins(SetGlobal, _objectPrototype, _arrayPrototype, _regularExpressions);
         SetGlobal("Boolean", JsValue.From(new JsFunction(args => JsValue.From(args.Length > 0 && args[0].ToBoolean()), 1)));
         var bigInt = new JsFunction(args => ToBigInt(args.Length == 0 ? JsValue.Undefined : args[0]), 1);
         bigInt.DefineOwnProperty("name", PropertyDescriptor.Data(JsValue.From("BigInt"), configurable: true));

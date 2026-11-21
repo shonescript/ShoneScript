@@ -15,7 +15,7 @@ public enum TokenKind
     Break, Continue, PlusEqual, MinusEqual, StarEqual, SlashEqual, PercentEqual, BigInt,
     OptionalChain, NullishCoalescing, NullishAssign, BitwiseAnd, BitwiseOr, BitwiseXor,
     BitwiseAndEqual, BitwiseOrEqual, BitwiseXorEqual, ShiftLeft, ShiftRight, ShiftUnsignedRight,
-    ShiftLeftEqual, ShiftRightEqual, ShiftUnsignedRightEqual, Power, PowerEqual, Do, AndAndEqual, OrOrEqual, Arrow
+    ShiftLeftEqual, ShiftRightEqual, ShiftUnsignedRightEqual, Power, PowerEqual, Do, AndAndEqual, OrOrEqual, Arrow, RegExp
 }
 
 public readonly record struct SourcePosition(int Offset, int Line, int Column);
@@ -29,6 +29,7 @@ public readonly record struct Token(TokenKind Kind, string Text, int Offset, int
     public string Raw { get; init; } = Text;
     public bool HasLineTerminatorBefore { get; init; }
     internal bool HasLegacyOctalEscape { get; init; }
+    public string? RegExpFlags { get; init; }
 }
 
 public sealed class JsSyntaxException(string message, int line, int column) : Exception($"{message} ({line}:{column})")

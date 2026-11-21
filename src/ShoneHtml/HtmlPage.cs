@@ -277,7 +277,10 @@ public sealed class HtmlPage : IDisposable
     {
         if (_disposed || !Document.Contains(target))
             return Task.CompletedTask;
-        var control = target.Closest("a[href], button, input, label");
+        IElement? control = target;
+        while (control is not null && !IsDisclosureSummary(control) &&
+            !control.Matches("a[href], button, input, label, select, textarea"))
+            control = control.ParentElement;
         if (control is { LocalName: "button" or "input" } && HtmlForms.IsDisabled(control))
             return Task.CompletedTask;
 
@@ -319,6 +322,14 @@ public sealed class HtmlPage : IDisposable
                 FormControlChanged(checkable);
             return Task.CompletedTask;
         }
+        if (control is not null && IsDisclosureSummary(control) && control.ParentElement is { } details && Document.Contains(details))
+        {
+            if (details.HasAttribute("open")) details.RemoveAttribute("open");
+            else details.SetAttribute("open", "");
+            MarkDirty();
+            PublishChanges();
+            return Task.CompletedTask;
+        }
         if (control?.LocalName == "label" && !_executingDefault)
         {
             var associated = control.GetAttribute("for") is { } id ? Document.GetElementById(id) :
@@ -342,6 +353,18 @@ public sealed class HtmlPage : IDisposable
             return browser.NavigateAsync(address);
         return Task.CompletedTask;
     }
+
+    internal static IElement? FirstSummary(IElement element)
+    {
+        if (element is IHtmlDetailsElement)
+            foreach (var child in element.Children)
+                if (child.LocalName == "summary" && child.NamespaceUri == NamespaceNames.HtmlUri)
+                    return child;
+        return null;
+    }
+
+    internal static bool IsDisclosureSummary(IElement element) => element.LocalName == "summary" &&
+        element.ParentElement is { } parent && ReferenceEquals(FirstSummary(parent), element);
 
     internal void FormControlChanged(IElement control)
     {

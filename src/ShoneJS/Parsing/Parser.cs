@@ -11,6 +11,12 @@ public enum ParseGoal { Script, Module }
 public sealed partial class Parser(IReadOnlyList<Token> tokens, ParseGoal goal = ParseGoal.Script, bool forceStrict = false,
     bool typeScript = false, CancellationToken cancellationToken = default)
 {
+    private readonly Lexer? _lexer;
+
+    public Parser(Lexer lexer, ParseGoal goal = ParseGoal.Script, bool forceStrict = false,
+        bool typeScript = false, CancellationToken cancellationToken = default)
+        : this(Array.Empty<Token>(), goal, forceStrict, typeScript, cancellationToken) => _lexer = lexer;
+
     private int _index;
     private int _functionDepth, _loopDepth, _switchDepth, _parseDepth;
     private bool _asyncFunction;
@@ -22,13 +28,14 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, ParseGoal goal =
     public bool IsStrict => _strict;
     public ParseGoal Goal => goal;
 
-    private Token Current => tokens[Math.Min(_index, tokens.Count - 1)];
-    private Token Previous => tokens[_index - 1];
+    private Token TokenAt(int index) => _lexer?.TokenAt(index) ?? tokens[Math.Min(index, tokens.Count - 1)];
+    private Token Current => TokenAt(_index);
+    private Token Previous => TokenAt(_index - 1);
     private bool LineBreak => Current.HasLineTerminatorBefore || _index > 0 && Previous.End.Line < Current.Line;
     private Token Take()
     {
         cancellationToken.ThrowIfCancellationRequested();
-        return tokens[_index++];
+        return TokenAt(_index++);
     }
 
     private void EnterParse()
@@ -511,11 +518,14 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, ParseGoal goal =
 
     private Expr Primary()
     {
+        if (_lexer is not null && Current.Kind is TokenKind.Slash or TokenKind.SlashEqual)
+            _lexer.ReadRegExp(_index);
         var token = Take();
         Expr expression = token.Kind switch
         {
             TokenKind.Number => new LiteralExpr(Number(token)),
             TokenKind.BigInt => new BigIntExpr(Integer(token.Text[..^1])),
+            TokenKind.RegExp => RegExpLiteral(token),
             TokenKind.String => StringLiteral(token),
             TokenKind.Template or TokenKind.TemplateHead => TemplateLiteral(token),
             TokenKind.True => new LiteralExpr(true),
@@ -552,6 +562,19 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, ParseGoal goal =
         var operand = Expression(14);
         ValidateTarget(operand, token);
         return new UpdateExpr(operand, token.Kind, Prefix: true);
+    }
+
+    private static RegExpLiteralExpr RegExpLiteral(Token token)
+    {
+        var flags = token.RegExpFlags ?? "";
+        try
+        {
+            return new RegExpLiteralExpr(token.Text, flags)
+            {
+                Definition = Runtime.Builtins.RegExpBuiltins.Compile(token.Text, flags)
+            };
+        }
+        catch (ArgumentException error) { throw Error(error.Message, token); }
     }
 
     private LiteralExpr StringLiteral(Token token)

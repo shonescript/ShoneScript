@@ -104,12 +104,17 @@ internal sealed partial class HtmlScriptHost
         _loadCompletion?.TrySetResult();
     }
 
+    internal static bool IsExecutableScript(IElement element) =>
+        element.NamespaceUri == "http://www.w3.org/1999/xhtml" &&
+        (IsModule(element) || !element.HasAttribute("nomodule") && ClassicTypes.Contains(element.GetAttribute("type")?.Trim() ?? ""));
+
+    private static bool IsModule(IElement element) =>
+        string.Equals(element.GetAttribute("type")?.Trim(), "module", StringComparison.OrdinalIgnoreCase);
+
     private static Script? DescribeScript(IElement element, int index)
     {
-        if (element.NamespaceUri != "http://www.w3.org/1999/xhtml") return null;
-        var type = element.GetAttribute("type")?.Trim() ?? "";
-        var module = type.Equals("module", StringComparison.OrdinalIgnoreCase);
-        if (!module && (!ClassicTypes.Contains(type) || element.HasAttribute("nomodule"))) return null;
+        if (!IsExecutableScript(element)) return null;
+        var module = IsModule(element);
         var src = element.GetAttribute("src");
         var async = (module || src is not null) && element.HasAttribute("async");
         return new(element, index, module, src, element.TextContent, async, module || src is not null && element.HasAttribute("defer"));
@@ -125,6 +130,8 @@ internal sealed partial class HtmlScriptHost
         var source = $"script[{script.Index}]";
         try
         {
+            var address = script.External ? ScriptAddress(script) : null;
+            if (address is not null) source += $" ({address.AbsoluteUri})";
             if (script.Module)
             {
                 var graph = await DownloadGraphAsync(script).ConfigureAwait(false);
@@ -132,8 +139,8 @@ internal sealed partial class HtmlScriptHost
             }
             else
             {
-                var resource = await DownloadScriptAsync(ScriptAddress(script), module: false).ConfigureAwait(false);
-                source = resource.Address.AbsoluteUri;
+                var resource = await DownloadScriptAsync(address!, module: false).ConfigureAwait(false);
+                source = $"script[{script.Index}] ({resource.Address.AbsoluteUri})";
                 var text = resource.DecodeText();
                 if (!_tasks.Post(source, () =>
                 {

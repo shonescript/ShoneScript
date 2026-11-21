@@ -255,6 +255,76 @@ public sealed class HtmlPageTests
         AssertError(Assert.Single(errors), "script[1] Promise jobs", "limit");
     }
 
+    [Fact]
+    public void OuterHtmlReplacesInParentContextAndPreservesDetachedReferences()
+    {
+        List<HtmlScriptError> errors = [];
+        using var page = HtmlPage.Parse("""
+            <table><tbody><tr id="old"><td>Old</td></tr><tr id="last"><td>Last</td></tr></tbody></table>
+            <div id="host"><span id="remove">Remove</span></div>
+            <script>
+                const old = document.getElementById('old');
+                old.outerHTML = '<tr id="first"><td>First</td></tr><tr id="second"><td>Second</td></tr>';
+                old.outerHTML = '<tr id="ignored"></tr>';
+                const host = document.getElementById('host');
+                const fragment = document.createDocumentFragment();
+                const child = document.createElement('div');
+                fragment.appendChild(child);
+                child.outerHTML = '<span id="fragment">Fragment</span>tail';
+                host.appendChild(fragment);
+                document.getElementById('remove').outerHTML = null;
+                if (!old.isConnected && old.outerHTML.indexOf('Old') >= 0 && !child.isConnected) {
+                    try { document.documentElement.outerHTML = ''; }
+                    catch (error) { document.title = error.name; }
+                }
+            </script>
+            """, new HtmlPageOptions { OnScriptError = errors.Add });
+
+        Assert.Empty(errors);
+        Assert.Equal("NoModificationAllowedError", page.Title);
+        Assert.Equal(new[] { "first", "second", "last" }, page.Document.QuerySelectorAll("tbody > tr").Select(tr => tr.Id));
+        Assert.Equal("First", Element(page, "first").TextContent);
+        Assert.Null(page.Document.GetElementById("old"));
+        Assert.Null(page.Document.GetElementById("ignored"));
+        Assert.Null(page.Document.GetElementById("remove"));
+        Assert.Equal("Fragmenttail", Element(page, "host").TextContent);
+    }
+
+    [Fact]
+    public async Task OuterHtmlLimitsRejectUncommittedMutations()
+    {
+        await using var server = new BrowserHttpFixture(_ => BrowserHttpFixture.Response.Text("""
+            <title>limits:</title><main><div id="target">original</div></main>
+            <script>
+                const target = document.getElementById('target');
+                function attempt(markup, kind) {
+                    try { target.outerHTML = markup; }
+                    catch (error) {
+                        if (error.name === 'TypeError' && target.isConnected) document.title += kind;
+                    }
+                }
+                let nodes = '', deep = '', big = 'abc', unicode = '\u4e00';
+                for (let i = 0; i < 40; i++) nodes += '<i></i>';
+                for (let i = 0; i < 12; i++) deep = '<div>' + deep + '</div>';
+                for (let i = 0; i < 10; i++) { big += big; unicode += unicode; }
+                attempt(big, ' bytes');
+                attempt(unicode, ' utf8');
+                attempt(deep, ' depth');
+                attempt(nodes, ' nodes');
+            </script>
+            """));
+        using var browser = new HtmlBrowser(new HtmlBrowserOptions
+        {
+            EnableTrustedScripts = true, MaximumResponseBytes = 2048, MaximumDocumentDepth = 10, MaximumDocumentNodes = 30
+        });
+        await browser.NavigateAsync(server.Root);
+
+        var page = Assert.IsType<HtmlPage>(browser.Page);
+        Assert.Equal("limits: bytes utf8 depth nodes", page.Title);
+        Assert.Equal("original", Element(page, "target").TextContent);
+        Assert.Single(page.Document.QuerySelectorAll("main > *"));
+    }
+
     private static IElement Element(HtmlPage page, string id) =>
         Assert.IsAssignableFrom<IElement>(page.Document.GetElementById(id));
 

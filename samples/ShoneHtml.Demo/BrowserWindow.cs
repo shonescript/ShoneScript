@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 using ShoneHtml;
@@ -6,10 +7,14 @@ internal static class BrowserWindow
 {
     internal static Window Create(string? initialAddress, string startPage, bool trustedScripts)
     {
-        var browser = new HtmlBrowser(new HtmlBrowserOptions { EnableTrustedScripts = trustedScripts }, new UiContext());
         var window = new Window()
             .Title("ShoneHtml")
             .Resizable(960, 680, minWidth: 420, minHeight: 260);
+        var browser = new HtmlBrowser(new HtmlBrowserOptions
+        {
+            EnableTrustedScripts = trustedScripts,
+            GetDisplayMetrics = () => DisplayMetrics(window)
+        }, new UiContext());
         var address = new TextBox().Placeholder("https://").Column(4);
         var status = new TextBlock().Text("Ready").Margin(10, 4).DockBottom();
         var closed = false;
@@ -120,6 +125,33 @@ internal static class BrowserWindow
             }
         }
     }
+
+    private static HtmlDisplayMetrics DisplayMetrics(Window window)
+    {
+        var scale = window.DpiScale;
+        if (OperatingSystem.IsWindows() && window.Handle != 0)
+        {
+            var monitor = MonitorFromWindow(window.Handle, 2); // nearest monitor
+            var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+            if (monitor != 0 && GetMonitorInfo(monitor, ref info))
+                return new((int)Math.Round((info.Bounds.Right - info.Bounds.Left) / scale),
+                    (int)Math.Round((info.Bounds.Bottom - info.Bounds.Top) / scale), scale);
+        }
+        return new(0, 0, scale);
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect { public int Left, Top, Right, Bottom; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MonitorInfo { public int Size; public NativeRect Bounds, WorkArea; public int Flags; }
+
+    [DllImport("user32.dll", ExactSpelling = true)]
+    private static extern nint MonitorFromWindow(nint window, uint flags);
+
+    [DllImport("user32.dll", EntryPoint = "GetMonitorInfoW", ExactSpelling = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetMonitorInfo(nint monitor, ref MonitorInfo info);
 
     private static Button ToolbarButton(string symbol, string help, Action clicked)
         => new Button().Content(symbol).FontSize(18).OnClick(clicked)

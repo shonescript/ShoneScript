@@ -324,7 +324,7 @@ public sealed class HtmlView : Panel
             if (box.ControlBounds is not null)
                 placed[box.Element] = box;
         }
-        var sequence = Page.Document.QuerySelectorAll("a[href],button,input,select,textarea,[tabindex]")
+        var sequence = Page.Document.QuerySelectorAll("a[href],button,input,select,textarea,summary,[tabindex]")
             .Where(element => IsFocusable(element) && TabIndexOf(element) >= 0 && placed.ContainsKey(element))
             .OrderBy(element => TabIndexOf(element) is > 0 and var index ? index : int.MaxValue)
             .ToList();
@@ -798,6 +798,7 @@ public sealed class HtmlView : Panel
         "a" => element.HasAttribute("href") || element.HasAttribute("tabindex"),
         "input" => InputType(element) != "hidden",
         "textarea" or "select" or "button" => true,
+        "summary" => HtmlPage.IsDisclosureSummary(element) || element.HasAttribute("tabindex"),
         _ => element.HasAttribute("tabindex")
     });
     private static string ReadValue(IElement element) => element switch

@@ -12,6 +12,10 @@ public sealed class Lexer(string source, CancellationToken cancellationToken = d
     private bool _lineBefore;
     private readonly List<Token> _tokens = [];
     private readonly Stack<int> _templateBraces = new();
+    private readonly Stack<bool> _scanParens = new();
+    private readonly Stack<bool> _scanBraces = new();
+    private readonly Dictionary<int, int[]> _slashTemplates = new();
+    private bool _scanAfterControl;
     private SourcePosition Position => new(_offset, _line, _column);
 
     private static readonly Dictionary<string, TokenKind> Keywords = new(StringComparer.Ordinal)
@@ -32,34 +36,63 @@ public sealed class Lexer(string source, CancellationToken cancellationToken = d
     public IReadOnlyList<Token> Scan()
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (_tokens.Count != 0 && _tokens[^1].Kind == TokenKind.End) return _tokens;
-        if (Peek() == '#' && Peek(1) == '!') SkipLine();
+        while (_tokens.Count == 0 || _tokens[^1].Kind != TokenKind.End)
+            ScanNext(standalone: true);
+        return _tokens;
+    }
+
+    internal Token TokenAt(int index)
+    {
+        while (_tokens.Count <= index && (_tokens.Count == 0 || _tokens[^1].Kind != TokenKind.End))
+            ScanNext(standalone: false);
+        return _tokens[Math.Min(index, _tokens.Count - 1)];
+    }
+
+    internal void ReadRegExp(int index)
+    {
+        var slash = _tokens[index];
+        _tokens.RemoveRange(index, _tokens.Count - index);
+        _offset = slash.Offset + 1;
+        _line = slash.Line;
+        _column = slash.Column + 1;
+        _lineBefore = slash.HasLineTerminatorBefore;
+        _templateBraces.Clear();
+        if (_slashTemplates.Remove(index, out var braces))
+            for (var i = braces.Length - 1; i >= 0; i--) _templateBraces.Push(braces[i]);
+        ScanRegExp(slash.Start);
+    }
+
+    private void ScanNext(bool standalone)
+    {
+        if (_offset == 0 && Peek() == '#' && Peek(1) == '!') SkipLine();
         while (_offset < source.Length)
         {
             if (SkipTrivia()) continue;
             var start = Position;
+            var afterControl = _scanAfterControl;
+            _scanAfterControl = false;
             var ch = Advance();
             if (IsIdentifierStart(ch))
             {
                 while (IsIdentifierPart(Peek())) Advance();
                 var text = source[start.Offset.._offset];
                 Add(Keywords.GetValueOrDefault(text, TokenKind.Identifier), start, text);
-                continue;
+                return;
             }
             if (char.IsAsciiDigit(ch) || ch == '.' && char.IsAsciiDigit(Peek()))
             {
                 ScanNumber(start, ch);
-                continue;
+                return;
             }
             if (ch is '\'' or '"')
             {
                 ScanString(start, ch);
-                continue;
+                return;
             }
             if (ch == '`')
             {
                 ScanTemplate(start, first: true);
-                continue;
+                return;
             }
             // Template substitutions reuse the normal lexer, while this stack tracks nested braces
             // so a closing brace can resume scanning the template tail instead of ending the token stream.
@@ -69,10 +102,19 @@ public sealed class Lexer(string source, CancellationToken cancellationToken = d
                 if (braces == 0 && ch == '}')
                 {
                     ScanTemplate(start, first: false);
-                    continue;
+                    return;
                 }
                 _templateBraces.Push(braces + (ch == '{' ? 1 : -1));
             }
+            if (standalone && ch == '/' && (afterControl || StandaloneAllowsRegExp()))
+            {
+                ScanRegExp(start);
+                return;
+            }
+            if (!standalone && ch == '/' && _templateBraces.Count > 0)
+                _slashTemplates[_tokens.Count] = _templateBraces.ToArray();
+            var previous = _tokens.Count > 0 ? _tokens[^1].Kind : TokenKind.End;
+            var afterProperty = _tokens.Count > 1 && _tokens[^2].Kind is TokenKind.Dot or TokenKind.OptionalChain;
             Add(ch switch
             {
                 '(' => TokenKind.LeftParen, ')' => TokenKind.RightParen,
@@ -96,10 +138,51 @@ public sealed class Lexer(string source, CancellationToken cancellationToken = d
                 '^' => Match('=') ? TokenKind.BitwiseXorEqual : TokenKind.BitwiseXor,
                 _ => throw Error($"Unexpected character '{ch}'", start)
             }, start);
+            if (standalone)
+            {
+                if (ch == '(') _scanParens.Push(!afterProperty && previous is TokenKind.If or TokenKind.While or TokenKind.For or TokenKind.Switch or TokenKind.Catch);
+                if (ch == ')') _scanAfterControl = _scanParens.TryPop(out var isControl) && isControl;
+                if (ch == '{') _scanBraces.Push(afterControl || previous is TokenKind.End or TokenKind.Semicolon or TokenKind.Else or TokenKind.Try or TokenKind.Finally or TokenKind.Do);
+                if (ch == '}') _scanAfterControl = _scanBraces.TryPop(out var isBlock) && isBlock;
+            }
+            return;
         }
         if (_templateBraces.Count != 0) throw Error("Unterminated template substitution", Position);
         Add(TokenKind.End, Position);
-        return _tokens;
+    }
+
+    // Scan() has no parser feedback; this lexical heuristic is only for standalone tokenization.
+    private bool StandaloneAllowsRegExp() =>
+        !(_tokens.Count > 1 && _tokens[^2].Kind is TokenKind.Dot or TokenKind.OptionalChain) &&
+        (_tokens.Count == 0 || _tokens[^1].Kind is not (
+            TokenKind.Identifier or TokenKind.Number or TokenKind.BigInt or TokenKind.String or TokenKind.RegExp or
+            TokenKind.True or TokenKind.False or TokenKind.Null or TokenKind.This or TokenKind.Template or TokenKind.TemplateTail or
+            TokenKind.RightParen or TokenKind.RightBracket or TokenKind.RightBrace or TokenKind.PlusPlus or TokenKind.MinusMinus));
+
+    private void ScanRegExp(SourcePosition start)
+    {
+        var inClass = false;
+        while (_offset < source.Length && !IsLineTerminator(Peek()))
+        {
+            var ch = Advance();
+            if (ch == '\\')
+            {
+                if (_offset == source.Length || IsLineTerminator(Peek())) break;
+                Advance();
+                continue;
+            }
+            if (ch == '[') inClass = true;
+            else if (ch == ']') inClass = false;
+            else if (ch == '/' && !inClass)
+            {
+                var flagStart = _offset;
+                while (IsIdentifierPart(Peek())) Advance();
+                var flags = source[flagStart.._offset];
+                Add(TokenKind.RegExp, start, source[(start.Offset + 1)..(flagStart - 1)], flags: flags);
+                return;
+            }
+        }
+        throw Error("Unterminated regular expression literal", start);
     }
 
     private bool SkipTrivia()
@@ -331,12 +414,12 @@ public sealed class Lexer(string source, CancellationToken cancellationToken = d
 
     // HasLineTerminatorBefore is retained because JavaScript's automatic semicolon insertion
     // and restricted productions (for example, return and throw) depend on it.
-    private void Add(TokenKind kind, SourcePosition start, string? text = null, string? raw = null, bool legacy = false)
+    private void Add(TokenKind kind, SourcePosition start, string? text = null, string? raw = null, bool legacy = false, string? flags = null)
     {
         raw ??= source[start.Offset.._offset];
         _tokens.Add(new Token(kind, text ?? raw, start.Offset, start.Line, start.Column)
         {
-            Raw = raw, End = Position, HasLineTerminatorBefore = _lineBefore, HasLegacyOctalEscape = legacy
+            Raw = raw, End = Position, HasLineTerminatorBefore = _lineBefore, HasLegacyOctalEscape = legacy, RegExpFlags = flags
         });
         _lineBefore = false;
     }

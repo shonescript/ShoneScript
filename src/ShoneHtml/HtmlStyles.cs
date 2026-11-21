@@ -528,6 +528,66 @@ internal sealed class HtmlStyles
         return -1;
     }
 
+    // Deliberately omit fallback mappings (e.g. flow-root to block) and properties ignored by layout.
+    internal static bool SupportsDeclaration(string property, string value)
+    {
+        if (property.Length > 128 || value.Length > 4096) return false;
+        var name = property.Trim().ToLowerInvariant();
+        var keyword = StripComments(value).Trim().ToLowerInvariant();
+        if (keyword.Length == 0) return false;
+        return name switch
+        {
+            "display" => ParseDisplay(keyword) is not null,
+            "box-sizing" => keyword is "border-box" or "content-box",
+            "position" => keyword is "static" or "relative" or "absolute" or "fixed",
+            "inset" => TryInsets(keyword, out _),
+            "top" or "right" or "bottom" or "left" => TryOffset(keyword, out _),
+            "width" or "height" => keyword == "auto" || TryLength(keyword, false, out _),
+            "color" or "border-color" => keyword == "currentcolor" || TryColor(keyword, out _),
+            "background-color" => TryColor(keyword, out _),
+            "gap" or "row-gap" or "column-gap" => ValidGap(name, keyword.Split(HtmlSpace, StringSplitOptions.RemoveEmptyEntries), out _),
+            "grid-template-columns" or "grid-template-rows" => TryTracks(keyword, out _),
+            _ => false
+        };
+    }
+
+    internal static bool SupportsCondition(string condition)
+    {
+        if (condition.Length > 4096) return false;
+        var text = StripComments(condition).AsSpan().Trim();
+        if (text.StartsWith("selector(", StringComparison.OrdinalIgnoreCase) && text[^1] == ')')
+        {
+            var selector = text[9..^1];
+            if (selector.Contains('\\') || !Rule.TryParse(selector, [], [], 0, out var rule)) return false;
+            return rule.Parts.All(part => ValidName(part.Tag) && part.Ids.All(ValidName) && part.Classes.All(ValidName) &&
+                part.Attributes.All(attribute => ValidName(attribute.Name) && attribute.Flag != 's') &&
+                part.Pseudos.All(pseudo => pseudo is "checked" or "disabled" or "enabled" or "required" or "optional" or
+                    "focus" or "focus-within" or "hover" or "active" or "link" or "any-link" or "root" or
+                    "first-child" or "last-child" or "only-child"));
+        }
+        if (text.Length < 3 || text[0] != '(' || text[^1] != ')') return false;
+        var body = text[1..^1];
+        var colon = body.IndexOf(':');
+        return colon > 0 && SupportsDeclaration(body[..colon].ToString(), body[(colon + 1)..].ToString());
+
+        static bool ValidName(string? name) => name is null || (!char.IsAsciiDigit(name[0]) &&
+            (name[0] != '-' || name.Length > 1 && !char.IsAsciiDigit(name[1])));
+    }
+
+    private static HtmlDisplay? ParseDisplay(string value) => value switch
+    {
+        "none" => HtmlDisplay.None, "block" => HtmlDisplay.Block, "inline" => HtmlDisplay.Inline,
+        "inline-block" => HtmlDisplay.InlineBlock, "flex" => HtmlDisplay.Flex, "inline-flex" => HtmlDisplay.InlineFlex,
+        "grid" => HtmlDisplay.Grid, "inline-grid" => HtmlDisplay.InlineGrid, _ => null
+    };
+
+    private static bool ValidGap(string name, string[] parts, out CssLength first)
+    {
+        first = default;
+        return parts.Length is 1 or 2 && TryGap(parts[0], out first) &&
+            (parts.Length == 1 || name == "gap" && TryGap(parts[1], out _));
+    }
+
     private static Declaration[] ReadDeclarations(ReadOnlySpan<char> css)
     {
         List<Declaration> declarations = [];
@@ -560,14 +620,11 @@ internal sealed class HtmlStyles
         switch (declaration.Name)
         {
             case "display":
-                style.Display = keyword switch
+                style.Display = ParseDisplay(keyword) ?? (keyword switch
                 {
-                    "none" => HtmlDisplay.None, "block" or "list-item" or "flow-root" => HtmlDisplay.Block,
-                    "inline" or "initial" => HtmlDisplay.Inline, "inline-block" => HtmlDisplay.InlineBlock,
-                    "flex" => HtmlDisplay.Flex, "inline-flex" => HtmlDisplay.InlineFlex,
-                    "grid" => HtmlDisplay.Grid, "inline-grid" => HtmlDisplay.InlineGrid,
+                    "list-item" or "flow-root" => HtmlDisplay.Block, "initial" => HtmlDisplay.Inline,
                     "inherit" => parent.Display, _ => style.Display
-                };
+                });
                 break;
             case "white-space":
                 style.WhiteSpace = keyword switch
@@ -702,8 +759,7 @@ internal sealed class HtmlStyles
                 break;
             case "gap": case "row-gap": case "column-gap":
                 var gaps = keyword.Split(HtmlSpace, StringSplitOptions.RemoveEmptyEntries);
-                if (gaps.Length is 1 or 2 && TryGap(gaps[0], out var firstGap) &&
-                    (gaps.Length == 1 || declaration.Name == "gap" && TryGap(gaps[1], out _)))
+                if (ValidGap(declaration.Name, gaps, out var firstGap))
                 {
                     if (declaration.Name != "column-gap") style.RowGap = firstGap;
                     if (declaration.Name != "row-gap") style.ColumnGap = gaps.Length == 2 && TryGap(gaps[1], out var secondGap) ? secondGap : firstGap;

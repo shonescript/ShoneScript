@@ -178,6 +178,40 @@ public sealed class HtmlWebApiTests
         Assert.Empty(errors);
     }
 
+    [Fact]
+    public async Task TrustedEnvironmentReportsHostMetricsAndOnlyRenderedCssCapabilities()
+    {
+        string? requestUserAgent = null;
+        await using var server = new BrowserHttpFixture(request =>
+        {
+            requestUserAgent = request.Headers.GetValueOrDefault("User-Agent");
+            return Response.Text("""
+                <title>pending</title><body><script>
+                document.body.dataset.agent = navigator.userAgent;
+                document.title = [navigator.platform, screen.width, screen.height, window.devicePixelRatio].join('|');
+                document.body.dataset.css = [CSS.supports('display', 'flex'), CSS.supports('(display: grid)'),
+                    CSS.supports('selector(div > [hidden]:first-child)'), CSS.supports('color', 'rgb(0 0 0 / 50%)'),
+                    CSS.supports('display', 'flow-root'), CSS.supports('selector(:has(a))'), CSS.supports('selector(:focus-visible)'),
+                    CSS.supports('width', '1qu'), CSS.supports('position', 'sticky'), CSS.supports('selector(#123)')].join('|');
+                </script>
+                """);
+        });
+        var errors = new ConcurrentQueue<HtmlScriptError>();
+        using var browser = new HtmlBrowser(new HtmlBrowserOptions
+        {
+            EnableTrustedScripts = true,
+            GetDisplayMetrics = () => new(1440, 960, 1.5),
+            ScriptOptions = new() { OnScriptError = errors.Enqueue }
+        });
+        await browser.NavigateAsync(server.Root).WaitAsync(TimeSpan.FromSeconds(8));
+        Assert.Empty(errors);
+        Assert.StartsWith("ShoneHtml/", requestUserAgent);
+        Assert.Equal(requestUserAgent, browser.Page!.Document.Body!.GetAttribute("data-agent"));
+        Assert.Equal($"{HtmlBrowser.Platform}|1440|960|1.5", browser.Page.Title);
+        Assert.Equal("true|true|true|true|false|false|false|false|false|false",
+            browser.Page.Document.Body.GetAttribute("data-css"));
+    }
+
     private static HtmlBrowser Trusted(ConcurrentQueue<HtmlScriptError> errors) => new(new HtmlBrowserOptions
     {
         EnableTrustedScripts = true,

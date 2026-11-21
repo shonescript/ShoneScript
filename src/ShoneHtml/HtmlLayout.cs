@@ -4,6 +4,7 @@
 using System.Globalization;
 using System.Text;
 using AngleSharp.Dom;
+using AngleSharp.Html.Dom;
 using Aprillz.MewUI;
 
 namespace ShoneHtml;
@@ -240,7 +241,7 @@ internal sealed class HtmlLayout
                     Leave(frame);
                     continue;
                 }
-                frames.Push(frame with { Next = child.NextSibling });
+                frames.Push(frame with { Next = frame.OnlyChild ? null : child.NextSibling });
                 if (child is IText text)
                     frame.Content.AddText(text.Data, frame.Element, frame.Style);
                 else if (child is IElement element && Enter(element, frame.Style, frame.Content, out var childFrame))
@@ -298,6 +299,8 @@ internal sealed class HtmlLayout
                 return false;
             }
 
+            var closed = IsClosedDisclosure(element);
+            var first = closed ? HtmlPage.FirstSummary(element) : element.FirstChild;
             var font = style.Text.FontSize;
             var margin = Resolve(style.Margin, flow.Width, font);
             var padding = Resolve(style.Padding, flow.Width, font);
@@ -314,7 +317,7 @@ internal sealed class HtmlLayout
                     span = flow.OpenSpan(element, style, border, insets);
                     flow.Spacer(insets.Left);
                 }
-                frame = new(element, element.FirstChild, style, flow, flow, -1, default, margin, insets, span);
+                frame = new(element, first, style, flow, flow, -1, default, margin, insets, span, OnlyChild: closed);
                 return true;
             }
 
@@ -366,8 +369,8 @@ internal sealed class HtmlLayout
             var item = AddBox(contentPlane, element, style, border);
             var content = new Flow(this, contentPlane, x + insets.Left, y + insets.Top,
                 outerWidth - insets.Horizontal, explicitHeight, style, position);
-            frame = new(element, element.FirstChild, style, flow, content, item, new(x, y, outerWidth, 0), margin, insets, null,
-                isolated, isAtomic, border, forceWidth is null && preferred is null);
+            frame = new(element, first, style, flow, content, item, new(x, y, outerWidth, 0), margin, insets, null,
+                isolated, isAtomic, border, forceWidth is null && preferred is null, OnlyChild: closed);
             if (replacement is { } substitute)
             {
                 var surface = new Rect(content.X, content.Top, content.Width, explicitHeight ?? 0);
@@ -582,10 +585,14 @@ internal sealed class HtmlLayout
             }
         }
 
+        private static bool IsClosedDisclosure(IElement element) =>
+            element is IHtmlDetailsElement && !element.HasAttribute("open");
+
         private List<LayoutChild> Children(IElement element, in HtmlStyle style, Flow content)
         {
             List<LayoutChild> children = [];
-            for (var node = element.FirstChild; node is not null; node = node.NextSibling)
+            var closed = IsClosedDisclosure(element);
+            for (var node = closed ? HtmlPage.FirstSummary(element) : element.FirstChild; node is not null; node = closed ? null : node.NextSibling)
             {
                 if (node is IText text && !string.IsNullOrWhiteSpace(text.Data))
                     children.Add(new(element, text.Data, new HtmlStyle(style.Text) { WhiteSpace = style.WhiteSpace, LineHeight = style.LineHeight }, default));
@@ -637,7 +644,8 @@ internal sealed class HtmlLayout
         {
             var padding = Insets(style, reference, false);
             var natural = GetReplacement(element, style);
-            var size = natural?.AttributeWidth ?? natural?.Intrinsic?.Width ?? MeasureText(element.TextContent, style.Text).Width;
+            var size = natural?.AttributeWidth ?? natural?.Intrinsic?.Width ??
+                MeasureText(IsClosedDisclosure(element) ? HtmlPage.FirstSummary(element)?.TextContent ?? "" : element.TextContent, style.Text).Width;
             return padding + Limit(Math.Min(reference, size), style.MinWidth, style.MaxWidth, reference, style.Text.FontSize, style.BorderBox, padding);
         }
 
@@ -969,7 +977,7 @@ internal sealed class HtmlLayout
 
         private readonly record struct Frame(IElement Element, INode? Next, HtmlStyle Style, Flow Flow, Flow Content,
             int Item, Rect Box, Edges Margin, Edges Insets, SpanBox? Span, bool Isolated = false, bool IsAtomic = false,
-            double Border = 0, bool ShrinkWidth = false);
+            double Border = 0, bool ShrinkWidth = false, bool OnlyChild = false);
 
         private sealed class Plane
         {

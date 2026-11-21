@@ -56,6 +56,10 @@ public abstract record Expr
 
 public sealed record LiteralExpr(object? Value) : Expr;
 public sealed record BigIntExpr(BigInt Value) : Expr;
+public sealed record RegExpLiteralExpr(string Pattern, string Flags) : Expr
+{
+    internal Runtime.Builtins.RegExpBuiltins.Definition? Definition { get; init; }
+}
 public sealed record TemplateElement(string Raw, string Cooked, SourceSpan Span);
 public sealed record TemplateExpr(IReadOnlyList<TemplateElement> Quasis, IReadOnlyList<Expr> Expressions) : Expr
 {

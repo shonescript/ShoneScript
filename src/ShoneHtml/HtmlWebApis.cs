@@ -10,6 +10,7 @@ internal sealed partial class HtmlScriptHost
 
     private void BindWebApis()
     {
+        BindEnvironment();
         BindEvent();
         BindNavigation();
         BindUrl();
@@ -24,6 +25,35 @@ internal sealed partial class HtmlScriptHost
             _engine.EnqueueMicrotask(() => Run("queueMicrotask", () => _engine.Invoke(callback, JsValue.Undefined, [])));
             return JsValue.Undefined;
         });
+    }
+
+    private void BindEnvironment()
+    {
+        var navigator = NewObject();
+        Accessor(navigator, "userAgent", _ => JsValue.From(HtmlBrowser.UserAgent));
+        Accessor(navigator, "platform", _ => JsValue.From(HtmlBrowser.Platform));
+        Accessor(_window, "navigator", _ => JsValue.From(navigator));
+
+        // A host without a display reports zero dimensions and uses unit device scale.
+        HtmlDisplayMetrics Metrics() => _page.Browser?.Options.GetDisplayMetrics?.Invoke() ?? new(0, 0, 1);
+        var screen = NewObject();
+        Accessor(screen, "width", _ => JsValue.From((double)Math.Max(0, Metrics().Width)));
+        Accessor(screen, "height", _ => JsValue.From((double)Math.Max(0, Metrics().Height)));
+        Accessor(_window, "screen", _ => JsValue.From(screen));
+        Accessor(_window, "devicePixelRatio", _ =>
+        {
+            var scale = Metrics().DevicePixelRatio;
+            return JsValue.From(double.IsFinite(scale) && scale > 0 ? scale : 1);
+        });
+
+        var css = NewObject();
+        Method(css, "supports", 1, (_, args) => JsValue.From(args.Length switch
+        {
+            >= 2 => HtmlStyles.SupportsDeclaration(args[0].ToJsString(), args[1].ToJsString()),
+            1 => HtmlStyles.SupportsCondition(args[0].ToJsString()),
+            _ => throw TypeError("CSS.supports requires at least one argument")
+        }));
+        _engine.SetGlobal("CSS", JsValue.From(css));
     }
 
     private void Global(string name, int arity, Func<JsValue, JsValue[], JsValue> call) => _engine.SetGlobal(name, HostFunction(call, arity));

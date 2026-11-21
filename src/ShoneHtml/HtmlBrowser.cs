@@ -1,7 +1,11 @@
 using System.Collections.Concurrent;
 using System.Net;
+using System.Runtime.InteropServices;
 
 namespace ShoneHtml;
+
+/// <summary>Screen dimensions in CSS pixels and the current window's device scale.</summary>
+public readonly record struct HtmlDisplayMetrics(int Width, int Height, double DevicePixelRatio);
 
 public sealed class HtmlBrowserOptions
 {
@@ -16,6 +20,8 @@ public sealed class HtmlBrowserOptions
     public int MaximumHistoryEntries { get; init; } = 50;
     public TimeSpan RequestTimeout { get; init; } = TimeSpan.FromSeconds(20);
     public HtmlPageOptions ScriptOptions { get; init; } = new();
+    /// <summary>Optional host display metrics, read on the browser's synchronization context.</summary>
+    public Func<HtmlDisplayMetrics>? GetDisplayMetrics { get; init; }
 }
 
 /// <summary>A single browsing context. Use its synchronization context when accessing a live page.</summary>
@@ -59,6 +65,10 @@ public sealed class HtmlBrowser : IDisposable
     public string? ScrollFragment { get; private set; }
     public long NavigationVersion { get; private set; }
     public event Action? Changed;
+
+    internal static string Platform { get; } = $"{(OperatingSystem.IsWindows() ? "Windows" : OperatingSystem.IsMacOS() ? "macOS" : OperatingSystem.IsLinux() ? "Linux" : "Unknown")} {RuntimeInformation.OSArchitecture}";
+    private static readonly Version ProductVersion = typeof(HtmlBrowser).Assembly.GetName().Version ?? new Version(1, 0);
+    internal static string UserAgent { get; } = $"ShoneHtml/{ProductVersion} ({Platform})";
 
     internal HtmlBrowserOptions Options { get; }
     internal HtmlResources Resources { get; }
@@ -135,7 +145,7 @@ public sealed class HtmlBrowser : IDisposable
             _index = target;
             page.Address = entry.Address;
             SetViewport(entry.Scroll, null);
-            Status = "";
+            Status = DocumentStatus(page);
             IsLoading = false;
             Changed?.Invoke();
             page.NotifyHistory(before, traversing: true);
@@ -167,7 +177,7 @@ public sealed class HtmlBrowser : IDisposable
                 Push(entry);
             page.Address = request.Address;
             SetViewport(0, GetFragment(request.Address));
-            Status = "";
+            Status = DocumentStatus(page);
             IsLoading = false;
             Changed?.Invoke();
             page.NotifyHistory(current, traversing: false);
@@ -210,10 +220,10 @@ public sealed class HtmlBrowser : IDisposable
             }
             SetViewport(existingIndex < 0 ? 0 : _history[_index].Scroll,
                 existingIndex < 0 ? GetFragment(resource.Address) : null);
-            Status = resource.IsSuccess ? Page.ResourceStatus : $"HTTP {(int)resource.Status} {resource.Status}";
+            Status = resource.IsSuccess ? DocumentStatus(Page) : $"HTTP {(int)resource.Status} {resource.Status}";
             Changed?.Invoke();
 
-            if (resource.IsSuccess && Options.EnableTrustedScripts && Options.ScriptOptions.EnableScripts)
+            if (resource.IsSuccess && RunsScripts)
                 await Page.LoadScriptsAsync(Options.ScriptOptions);
             operation.Token.ThrowIfCancellationRequested();
             IsLoading = false;
@@ -238,6 +248,16 @@ public sealed class HtmlBrowser : IDisposable
             if (ReferenceEquals(_navigation, operation))
                 _navigation = null;
         }
+    }
+
+    private bool RunsScripts => Options.EnableTrustedScripts && Options.ScriptOptions.EnableScripts;
+
+    private string DocumentStatus(HtmlPage page)
+    {
+        if (RunsScripts || !page.Document.QuerySelectorAll("script").Any(HtmlScriptHost.IsExecutableScript))
+            return page.ResourceStatus;
+        const string disabled = "Page scripts were not run (disabled).";
+        return page.ResourceStatus.Length == 0 ? disabled : $"{disabled} {page.ResourceStatus}";
     }
 
     private Task RejectAddress()

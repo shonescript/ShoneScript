@@ -69,6 +69,76 @@ public sealed class HtmlLayoutTests(ITestOutputHelper output)
     }
 
     [Theory]
+    [InlineData("block")]
+    [InlineData("flex; flex-direction: column")]
+    [InlineData("grid")]
+    public async Task DisclosureAndHiddenChangesUpdateFlowPaintAndHitTesting(string display)
+    {
+        List<HtmlScriptError> errors = [];
+        using var page = HtmlPage.Parse($$"""
+            <style>body { margin: 0; } details { display: {{display}}; }</style>
+            <button id="hide">Hide</button><button id="show">Show</button>
+            <div id="wrapper"><details id="panel">
+                secret
+                <div id="before" style="height: 40px">Before</div>
+                <summary id="summary"><span id="label">Toggle</span><button id="nested" type="button">Button</button></summary>
+                <summary id="other">Other</summary>
+                <input id="field">
+                <div id="fixed" style="position: fixed; top: 200px; height: 20px; width: 90px">Fixed</div>
+            </details></div>
+            <div id="after">After</div>
+            <script>
+                const panel = document.getElementById('panel');
+                const wrapper = document.getElementById('wrapper');
+                document.getElementById('hide').addEventListener('click', () => {
+                    wrapper.hidden = 1;
+                    if (wrapper.hidden && panel.open) panel.setAttribute('data-state', 'hidden and open');
+                });
+                document.getElementById('show').addEventListener('click', () => {
+                    wrapper.hidden = false;
+                    panel.open = 0;
+                    if (!wrapper.hidden && !panel.open) panel.setAttribute('data-state', 'visible and closed');
+                });
+                let cancel = true;
+                document.getElementById('summary').addEventListener('click', event => {
+                    if (cancel) { event.preventDefault(); cancel = false; }
+                });
+            </script>
+            """, new HtmlPageOptions { OnScriptError = errors.Add });
+        var panel = page.Document.GetElementById("panel")!;
+        var layout = new HtmlLayout();
+        HtmlLayoutResult Current() => layout.Get(page.Document, page.Version, 400, Measure);
+        var closed = Current();
+        Assert.DoesNotContain(closed.Items, item => item.Element.Id is "before" or "other" or "field" or "fixed" || item.Text == "secret");
+        var label = TextItem(closed, "Toggle");
+        var hit = Assert.IsAssignableFrom<IElement>(closed.HitTest(label.Bounds.Left + 1, label.Bounds.Top + 1));
+        Assert.Equal("label", hit.Id);
+
+        await page.ActivateAsync(hit);
+        Assert.Same(closed, Current());
+        Assert.False(panel.HasAttribute("open"));
+        await page.ActivateAsync(page.Document.GetElementById("nested")!);
+        Assert.False(panel.HasAttribute("open"));
+        await page.ActivateAsync(hit);
+        var opened = Current();
+        Assert.True(panel.HasAttribute("open"));
+        Assert.Contains(opened.Items, item => item.Element.Id == "field" && item.ControlBounds is not null);
+        Assert.Contains(opened.Items, item => item.Element.Id == "fixed" && item.Fixed);
+        Assert.True(TextItem(opened, "After").Bounds.Top > TextItem(closed, "After").Bounds.Top);
+        await page.ActivateAsync(page.Document.GetElementById("other")!);
+        Assert.True(panel.HasAttribute("open"));
+
+        await page.ActivateAsync(page.Document.GetElementById("hide")!);
+        Assert.Equal("hidden and open", panel.GetAttribute("data-state"));
+        Assert.DoesNotContain(Current().Items, item => ReferenceEquals(item.Element, panel) || panel.Contains(item.Element));
+        await page.ActivateAsync(page.Document.GetElementById("show")!);
+        Assert.Equal("visible and closed", panel.GetAttribute("data-state"));
+        Assert.Equal(label.Bounds, TextItem(Current(), "Toggle").Bounds);
+        Assert.Equal(closed.Height, Current().Height);
+        Assert.Empty(errors);
+    }
+
+    [Theory]
     [InlineData("中文换行测试文本")]
     [InlineData("abcdefghijklmnopqrstuvwxyz")]
     [InlineData("🙂🙂🙂🙂🙂🙂🙂")]

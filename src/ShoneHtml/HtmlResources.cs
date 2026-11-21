@@ -23,6 +23,7 @@ internal sealed partial class HtmlResources : IDisposable
             ConnectTimeout = options.RequestTimeout,
             PooledConnectionLifetime = TimeSpan.FromMinutes(5)
         }) { Timeout = Timeout.InfiniteTimeSpan };
+        _client.DefaultRequestHeaders.UserAgent.ParseAdd(HtmlBrowser.UserAgent);
     }
 
     internal static bool IsHttpAddress(Uri? address) =>

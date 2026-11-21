@@ -75,7 +75,15 @@ internal sealed partial class HtmlScriptHost
             SetInnerHtml(Element(e), v.Type == JsType.Null ? "" : v.ToJsString());
             _page.MarkDirty();
         });
-        Accessor(_elementPrototype, "outerHTML", e => JsValue.From(Element(e).OuterHtml));
+        Accessor(_elementPrototype, "outerHTML", e => JsValue.From(Element(e).OuterHtml),
+            (e, v) => SetOuterHtml(Element(e), v.Type == JsType.Null ? "" : v.ToJsString()));
+        Accessor(_elementPrototype, "hidden", e => JsValue.From(Element(e).HasAttribute("hidden")),
+            (e, v) => SetBooleanAttribute(Element(e), "hidden", v));
+        Accessor(_elementPrototype, "open", e => Element(e) is IHtmlDetailsElement details
+            ? JsValue.From(details.HasAttribute("open")) : JsValue.Undefined, (e, v) =>
+        {
+            if (Element(e) is IHtmlDetailsElement details) SetBooleanAttribute(details, "open", v);
+        });
         Accessor(_elementPrototype, "classList", e => JsValue.From(Properties(Element(e)).Classes));
         Accessor(_elementPrototype, "dataset", e => JsValue.From(Properties(Element(e)).Dataset));
         Accessor(_elementPrototype, "style", e => JsValue.From(Properties(Element(e)).Style), (e, v) => SetStyle(Element(e), v.ToJsString()));

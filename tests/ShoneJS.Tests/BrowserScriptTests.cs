@@ -17,6 +17,68 @@ public class BrowserScriptTests
         Assert.Equal(expected, new Engine().Evaluate(script).ToJsString());
 
     [Theory]
+    [InlineData("'a..b.'.split('.').join('|')", "a||b|")]
+    [InlineData("'a.b'.split('.', 1).join('|')", "a")]
+    [InlineData("'a.b'.split('.', -1).join('|')", "a|b")]
+    [InlineData("'a.b'.split('.', 4294967296).length", "0")]
+    [InlineData("'ab'.split('').join('|')", "a|b")]
+    [InlineData("''.split('').length", "0")]
+    [InlineData("''.split(',').length", "1")]
+    [InlineData("'a.b'.split()[0]", "a.b")]
+    [InlineData("Math.round(2.5)", "3")]
+    [InlineData("Math.round(-1.5)", "-1")]
+    [InlineData("Math.round(0.49999999999999994)", "0")]
+    [InlineData("Math.round(-0.5000000000000001)", "-1")]
+    [InlineData("1 / Math.round(-0.5)", "-Infinity")]
+    [InlineData("1 / Math.round(-0)", "-Infinity")]
+    [InlineData("Math.round({valueOf() { return '2.5'; }})", "3")]
+    [InlineData("Math.round()", "NaN")]
+    [InlineData("Math.round(Infinity)", "Infinity")]
+    [InlineData("(1.25).toFixed(1)", "1.3")]
+    [InlineData("(-1.25).toFixed(1)", "-1.3")]
+    [InlineData("(2.55).toFixed(1)", "2.5")]
+    [InlineData("(1.005).toFixed(2)", "1.00")]
+    [InlineData("(-0).toFixed(2)", "0.00")]
+    [InlineData("(-0.001).toFixed(2)", "-0.00")]
+    [InlineData("new Number(1.25).toFixed('2.9')", "1.25")]
+    [InlineData("(1.5).toFixed()", "2")]
+    [InlineData("(1.25).toFixed(100).length", "102")]
+    [InlineData("(1000000000000000128).toFixed(0)", "1000000000000000128")]
+    [InlineData("(1e21).toFixed(2)", "1e+21")]
+    [InlineData("NaN.toFixed(2)", "NaN")]
+    [InlineData("Infinity.toFixed(2)", "Infinity")]
+    [InlineData("new Date(0).toISOString()", "1970-01-01T00:00:00.000Z")]
+    [InlineData("new Date(-1.9).toISOString()", "1969-12-31T23:59:59.999Z")]
+    [InlineData("new Date('2000-02-29').toISOString()", "2000-02-29T00:00:00.000Z")]
+    [InlineData("new Date('2026-11-21T01:02:03.004+01:00').toISOString()", "2026-11-21T00:02:03.004Z")]
+    [InlineData("new Date(-8640000000000000).toISOString()", "-271821-04-20T00:00:00.000Z")]
+    [InlineData("new Date(8640000000000000).toISOString()", "+275760-09-13T00:00:00.000Z")]
+    public void FormatsBrowserNumbersAndDates(string script, string expected) =>
+        Assert.Equal(expected, new Engine().Evaluate(script).ToJsString());
+
+    [Theory]
+    [InlineData("Math.round(1n)", "TypeError")]
+    [InlineData("(1).toFixed(101)", "RangeError")]
+    [InlineData("NaN.toFixed(-1)", "RangeError")]
+    [InlineData("Reflect.apply(Number.prototype.toFixed, '1', [])", "TypeError")]
+    [InlineData("new Date('not a date').toISOString()", "RangeError")]
+    [InlineData("new Date(8640000000000001).toISOString()", "RangeError")]
+    [InlineData("Date.prototype.toISOString()", "TypeError")]
+    public void RejectsInvalidBrowserNumberAndDateInputs(string expression, string errorName) =>
+        Assert.True(new Engine().Evaluate($"try {{ {expression}; false; }} catch (err) {{ err instanceof {errorName}; }}").ToBoolean());
+
+    [Fact]
+    public void NewDateWithoutArgumentsFormatsARecentUtcTimestamp()
+    {
+        var before = DateTimeOffset.UtcNow;
+        var text = new Engine().Evaluate("new Date().toISOString()").ToJsString();
+        var after = DateTimeOffset.UtcNow;
+        var parsed = DateTimeOffset.ParseExact(text, "yyyy-MM-dd'T'HH:mm:ss.fff'Z'", System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.AssumeUniversal);
+        Assert.InRange(parsed, DateTimeOffset.FromUnixTimeMilliseconds(before.ToUnixTimeMilliseconds()), after);
+    }
+
+    [Theory]
     [InlineData("let f = (x, x) => x;")]
     [InlineData("let f = async (await) => 1;")]
     [InlineData("let f = (x)\n=> x;")]
