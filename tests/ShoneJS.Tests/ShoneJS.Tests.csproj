@@ -22,7 +22,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\ShoneJS\ShoneJS.csproj" />
+    <ProjectReference Include="..\..\src\ShoneJs\ShoneJs.csproj" />
   </ItemGroup>
 
 </Project>

@@ -11,6 +11,6 @@
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="../ShoneJs/ShoneJS.csproj" />
+    <ProjectReference Include="../ShoneJs/ShoneJs.csproj" />
   </ItemGroup>
 </Project>
