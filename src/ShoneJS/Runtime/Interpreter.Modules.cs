@@ -249,10 +249,10 @@ public sealed partial class Interpreter
             }
             var previous = CaptureContext();
             EnterModule(record);
-            JsOperation<JsValue> body;
+            JsOperation<Completion> body;
             try { body = ExecListAsync(record.Code.Statements); }
             finally { RestoreContext(previous); }
-            await body;
+            ScriptCompletionValue(await body);
             return JsValue.From(record.Namespace!);
         }
     }

@@ -85,6 +85,66 @@ public sealed class HtmlRendererTests
     }
 
     [Fact]
+    public async Task InputQueueWakesAWaitingReader()
+    {
+        var queue = new HtmlRendererInputQueue();
+        using var timeout = new CancellationTokenSource(Timeout);
+        var pending = queue.ReadAsync(System.Threading.Timeout.InfiniteTimeSpan, timeout.Token);
+        Assert.False(pending.IsCompleted);
+        var input = new HtmlRendererInput(HtmlRendererInputKind.Click, 7);
+        Assert.True(queue.TryEnqueue(input));
+        Assert.Equal(input, await pending);
+    }
+
+    [Fact]
+    public async Task InputQueuePollTimeoutAndCancellationLeaveNoPendingRead()
+    {
+        var queue = new HtmlRendererInputQueue();
+        using var timeout = new CancellationTokenSource(Timeout);
+        Assert.Null(await queue.ReadAsync(TimeSpan.FromMilliseconds(1), timeout.Token));
+        using var stopping = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+        var pending = queue.ReadAsync(System.Threading.Timeout.InfiniteTimeSpan, stopping.Token);
+        Assert.False(pending.IsCompleted);
+        stopping.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending.AsTask());
+
+        var input = new HtmlRendererInput(HtmlRendererInputKind.Text, 7, "ready");
+        Assert.True(queue.TryEnqueue(input));
+        Assert.Equal(input, await queue.ReadAsync(TimeSpan.Zero, timeout.Token));
+    }
+
+    [Fact]
+    public async Task InputQueueAbsorbsLargerTextBurstsAndKeepsEveryAcceptedInputInOrder()
+    {
+        var queue = new HtmlRendererInputQueue();
+        var edits = Enumerable.Range(0, 73).Select(i => new HtmlRendererInput(HtmlRendererInputKind.Text, 7, $"edit{i}"));
+        HtmlRendererInput[] inputs =
+        [
+            new(HtmlRendererInputKind.Focus, 7), .. edits,
+            new(HtmlRendererInputKind.Change, 7), new(HtmlRendererInputKind.Focus), new(HtmlRendererInputKind.Select, 8, Index: 1),
+            new(HtmlRendererInputKind.Click, 9), new(HtmlRendererInputKind.Submit, 10), new(HtmlRendererInputKind.Address, Text: Origin + "/#section")
+        ];
+        foreach (var input in inputs) Assert.True(queue.TryEnqueue(input));
+        Assert.False(queue.TryEnqueue(new(HtmlRendererInputKind.Submit, 10)));
+
+        using var timeout = new CancellationTokenSource(Timeout);
+        foreach (var input in inputs)
+            Assert.Equal(input, await queue.ReadAsync(TimeSpan.Zero, timeout.Token));
+        Assert.Null(await queue.ReadAsync(TimeSpan.Zero, timeout.Token));
+    }
+
+    [Fact]
+    public async Task CompletingInputQueueWakesReaderAndStopsAcceptingInput()
+    {
+        var queue = new HtmlRendererInputQueue();
+        using var timeout = new CancellationTokenSource(Timeout);
+        var pending = queue.ReadAsync(System.Threading.Timeout.InfiniteTimeSpan, timeout.Token);
+        queue.Complete();
+        await Assert.ThrowsAsync<InvalidOperationException>(() => pending.AsTask());
+        Assert.False(queue.TryEnqueue(new(HtmlRendererInputKind.Click, 7)));
+    }
+
+    [Fact]
     public async Task LoadsSameOriginScriptAndSkipsScriptWithIntegrity()
     {
         await using var worker = await WorkerPipe.StartAsync();

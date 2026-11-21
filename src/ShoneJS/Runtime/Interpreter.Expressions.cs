@@ -65,7 +65,53 @@ public sealed partial class Interpreter
         return JsValue.From(builder.ToString());
     }
 
-    private sealed record Reference(Func<JsValue> Read, Action<JsValue> Write, Func<bool> Delete, JsValue Receiver);
+    private enum ReferenceKind { Value, Binding, GlobalBinding, GlobalProperty, Member }
+
+    private readonly struct Reference(ReferenceKind kind, Interpreter? interpreter = null, string? key = null,
+        EnvironmentRecord.Binding? binding = null, JsValue value = default)
+    {
+        public JsValue Receiver => kind == ReferenceKind.Member ? value : JsValue.Undefined;
+
+        public JsValue Read() => kind switch
+        {
+            ReferenceKind.Value => value,
+            ReferenceKind.Binding => binding!.Read(key!),
+            ReferenceKind.GlobalBinding or ReferenceKind.GlobalProperty => interpreter!.GetGlobal(key!),
+            _ => value.ObjectValue is { } obj ? obj.Get(key!, value) : interpreter!._primitives.GetProperty(value, key!)
+        };
+
+        public void Write(JsValue result)
+        {
+            switch (kind)
+            {
+                case ReferenceKind.Binding:
+                    binding!.Write(key!, result);
+                    break;
+                case ReferenceKind.GlobalBinding:
+                    interpreter!.WriteBinding(interpreter._global, key!, result);
+                    break;
+                case ReferenceKind.GlobalProperty:
+                    if (interpreter!._strict && !interpreter._globalObject.HasProperty(key!))
+                        throw JsException.ReferenceError($"'{key}' is not defined");
+                    interpreter._globalObject.Set(key!, result);
+                    break;
+                case ReferenceKind.Member:
+                    if ((value.ObjectValue is not { } obj || !obj.Set(key!, result, value)) && interpreter!._strict)
+                        throw JsException.TypeError($"Cannot assign to property '{key}'");
+                    break;
+                default:
+                    throw new InvalidOperationException("Invalid assignment target");
+            }
+        }
+
+        public bool Delete() => kind switch
+        {
+            ReferenceKind.Value => true,
+            ReferenceKind.GlobalProperty => interpreter!._globalObject.Delete(key!),
+            ReferenceKind.Member => value.ObjectValue?.Delete(key!) ?? true,
+            _ => false
+        };
+    }
 
     private Reference Resolve(Expr expression)
     {
@@ -73,16 +119,10 @@ public sealed partial class Interpreter
         if (expression is IdentifierExpr identifier)
         {
             var name = identifier.Name;
-            var environment = _env.Resolve(name);
-            return new Reference(
-                () => environment is null || environment == _global ? GetGlobal(name) : environment.Get(name),
-                value =>
-                {
-                    if (environment is not null) WriteBinding(environment, name, value);
-                    else if (_strict && !_globalObject.HasProperty(name)) throw JsException.ReferenceError($"'{name}' is not defined");
-                    else _globalObject.Set(name, value);
-                },
-                () => environment is null && _globalObject.Delete(name), JsValue.Undefined);
+            var binding = _env.ResolveBinding(name, out var environment);
+            if (binding is null) return new Reference(ReferenceKind.GlobalProperty, this, name);
+            if (environment == _global && !binding.Lexical) return new Reference(ReferenceKind.GlobalBinding, this, name);
+            return new Reference(ReferenceKind.Binding, key: name, binding: binding);
         }
         if (expression is MemberExpr member) return MemberReference(Eval(member.Target), member.Key);
         if (expression is OptionalChainExpr chain) return ResolveChain(chain);
@@ -98,15 +138,7 @@ public sealed partial class Interpreter
     {
         if (AbstractOperations.IsNullish(receiver)) throw JsException.TypeError("Cannot access property of null or undefined");
         var key = Builtins.ObjectBuiltins.ToPropertyKey(property);
-        var obj = receiver.Data as JsObject;
-        return new Reference(
-            () => obj is null ? _primitives.GetProperty(receiver, key) : obj.Get(key, receiver),
-            value =>
-            {
-                if ((obj is null || !obj.Set(key, value, receiver)) && _strict)
-                    throw JsException.TypeError($"Cannot assign to property '{key}'");
-            },
-            () => obj is null || obj.Delete(key), receiver);
+        return new Reference(ReferenceKind.Member, this, key, value: receiver);
     }
 
     private static bool IsReference(Expr expression) => UnwrapTypeExpression(expression) is IdentifierExpr or MemberExpr or OptionalChainExpr;
@@ -142,8 +174,7 @@ public sealed partial class Interpreter
         return current;
     }
 
-    private static Reference ValueReference(JsValue value) => new(() => value,
-        _ => throw new InvalidOperationException("Invalid assignment target"), () => true, JsValue.Undefined);
+    private static Reference ValueReference(JsValue value) => new(ReferenceKind.Value, value: value);
 
     private JsValue Assign(Expr target, Expr expression, TokenKind? op = null)
     {
@@ -183,14 +214,14 @@ public sealed partial class Interpreter
         var value = AbstractOperations.ToPrimitive(reference.Read());
         if (value.Type != JsType.BigInt) value = JsValue.From(value.ToNumber());
         var increment = update.Op == TokenKind.PlusPlus ? 1 : -1;
-        var result = value.Data is BigInt integer ? JsValue.From(integer + increment) : JsValue.From(value.ToNumber() + increment);
+        var result = value.Type == JsType.BigInt ? JsValue.From((BigInt)value.Data! + increment) : JsValue.From(value.ToNumber() + increment);
         reference.Write(result);
         return update.Prefix ? result : value;
     }
 
     private JsValue Unary(UnaryExpr unary)
     {
-        if (unary.Op == TokenKind.Typeof && UnwrapTypeExpression(unary.Value) is IdentifierExpr id && _env.Resolve(id.Name) is null && !_globalObject.HasProperty(id.Name))
+        if (unary.Op == TokenKind.Typeof && UnwrapTypeExpression(unary.Value) is IdentifierExpr id && _env.ResolveBinding(id.Name, out _) is null && !_globalObject.HasProperty(id.Name))
             return JsValue.From("undefined");
         if (unary.Op == TokenKind.Delete)
         {
@@ -206,10 +237,10 @@ public sealed partial class Interpreter
         return unary.Op switch
         {
             TokenKind.Bang => JsValue.From(!value.ToBoolean()),
-            TokenKind.Minus when value.Data is BigInt integer => JsValue.From(-integer),
+            TokenKind.Minus when value.Type == JsType.BigInt => JsValue.From(-(BigInt)value.Data!),
             TokenKind.Minus => JsValue.From(-value.ToNumber()),
             TokenKind.Plus => JsValue.From(value.ToNumber()),
-            TokenKind.Tilde when value.Data is BigInt integer => JsValue.From(~integer),
+            TokenKind.Tilde when value.Type == JsType.BigInt => JsValue.From(~(BigInt)value.Data!),
             TokenKind.Tilde => JsValue.From((double)~ToInt32(value.ToNumber())),
             TokenKind.Void => JsValue.Undefined,
             TokenKind.Typeof => JsValue.From(value.Type switch { JsType.Null => "object", JsType.BigInt => "bigint", _ => value.Type.ToString().ToLowerInvariant() }),
@@ -315,11 +346,14 @@ public sealed partial class Interpreter
     {
         left = AbstractOperations.ToPrimitive(left);
         right = AbstractOperations.ToPrimitive(right);
-        if (left.Data is string a && right.Data is string b) return string.CompareOrdinal(a, b);
-        if (left.Data is BigInt x)
+        if (left.Type == JsType.String && right.Type == JsType.String)
+            return string.CompareOrdinal((string)left.Data!, (string)right.Data!);
+        if (left.Type == JsType.BigInt)
         {
-            if (right.Data is BigInt y) return x.CompareTo(y);
-            if (right.Data is string text) return AbstractOperations.TryParseBigInt(text, out var parsed) ? x.CompareTo(parsed) : null;
+            var x = (BigInt)left.Data!;
+            if (right.Type == JsType.BigInt) return x.CompareTo((BigInt)right.Data!);
+            if (right.Type == JsType.String)
+                return AbstractOperations.TryParseBigInt((string)right.Data!, out var parsed) ? x.CompareTo(parsed) : null;
             return CompareIntegerAndNumber(x, right.ToNumber());
         }
         if (right.Type == JsType.BigInt) return -Compare(right, left);
@@ -350,24 +384,33 @@ public sealed partial class Interpreter
 
     private JsValue Call(Expr target, List<Expr> arguments)
     {
-        var reference = IsReference(target) ? Resolve(target) : null;
-        return Invoke(reference?.Read() ?? Eval(target), reference?.Receiver ?? JsValue.Undefined, arguments);
+        var reference = IsReference(target) ? Resolve(target) : ValueReference(Eval(target));
+        return Invoke(reference.Read(), reference.Receiver, arguments);
     }
 
     private JsValue Invoke(JsValue function, JsValue receiver, List<Expr> arguments)
     {
-        var values = arguments.Select(Eval).ToArray();
-        if (function.Data is not JsFunction callable) throw JsException.TypeError("Value is not callable");
+        var values = EvaluateArguments(arguments);
+        if (function.ObjectValue is not JsFunction callable) throw JsException.TypeError("Value is not callable");
         return callable.Call(receiver, values);
     }
 
     private JsValue Construct(NewExpr expression)
     {
         var value = Eval(expression.Target);
-        var args = expression.Arguments.Select(Eval).ToArray();
-        if (value.Data is not JsFunction constructor)
+        var args = EvaluateArguments(expression.Arguments);
+        if (value.ObjectValue is not JsFunction constructor)
             throw JsException.TypeError("Value is not a constructor");
         return constructor.Construct(args);
+    }
+
+    private JsValue[] EvaluateArguments(List<Expr> arguments)
+    {
+        if (arguments.Count == 0) return [];
+        // Host functions can retain or mutate the array after the call.
+        var values = new JsValue[arguments.Count];
+        for (var i = 0; i < values.Length; i++) values[i] = Eval(arguments[i]);
+        return values;
     }
 
     private JsValue MakeArray(ArrayExpr array)

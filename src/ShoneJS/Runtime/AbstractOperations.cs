@@ -14,6 +14,7 @@ public static class AbstractOperations
     {
         JsType.Undefined or JsType.Null => true,
         JsType.Number => left.ToNumber() == right.ToNumber(),
+        JsType.Boolean => left.ToBoolean() == right.ToBoolean(),
         JsType.Object or JsType.Function or JsType.Symbol => ReferenceEquals(left.Data, right.Data),
         _ => Equals(left.Data, right.Data)
     };
@@ -38,22 +39,25 @@ public static class AbstractOperations
             return left.ToNumber() == right.ToNumber();
         if (left.Type == JsType.BigInt && right.Type is JsType.String or JsType.Number) return BigIntEquals((BigInt)left.Data!, right);
         if (right.Type == JsType.BigInt && left.Type is JsType.String or JsType.Number) return BigIntEquals((BigInt)right.Data!, left);
-        if (left.Data is JsObject && right.Data is not JsObject) return LooseEqual(ToPrimitive(left), right);
-        if (right.Data is JsObject && left.Data is not JsObject) return LooseEqual(left, ToPrimitive(right));
+        if (left.ObjectValue is null)
+            return right.ObjectValue is not null && LooseEqual(left, ToPrimitive(right));
+        if (right.ObjectValue is null) return LooseEqual(ToPrimitive(left), right);
         return false;
     }
 
     internal static JsValue ToPrimitive(JsValue value, bool preferString = false)
     {
-        if (value.Data is not JsObject obj) return value;
-        string[] methods = preferString ? ["toString", "valueOf"] : ["valueOf", "toString"];
-        foreach (var name in methods)
+        if (value.ObjectValue is not { } obj) return value;
+        var first = preferString ? "toString" : "valueOf";
+        var second = preferString ? "valueOf" : "toString";
+        return TryCall(first) ?? TryCall(second) ?? throw JsException.TypeError("Cannot convert object to primitive value");
+
+        JsValue? TryCall(string name)
         {
-            if (obj.Get(name, value).Data is not JsFunction function) continue;
+            if (obj.Get(name, value).ObjectValue is not JsFunction function) return null;
             var result = function.Call(value, []);
-            if (result.Data is not JsObject) return result;
+            return result.ObjectValue is null ? result : null;
         }
-        throw JsException.TypeError("Cannot convert object to primitive value");
     }
 
     private static bool BigIntEquals(BigInt integer, JsValue other)
@@ -65,9 +69,10 @@ public static class AbstractOperations
 
     public static bool IsNullish(JsValue value) => value.Type is JsType.Null or JsType.Undefined;
 
-    internal static bool TryParseBigInt(string text, out BigInt value)
+    internal static bool TryParseBigInt(string text, out BigInt value) => TryParseBigInt(TrimNumericString(text), out value);
+
+    private static bool TryParseBigInt(ReadOnlySpan<char> text, out BigInt value)
     {
-        text = TrimNumericString(text);
         value = BigInt.Zero;
         if (text.Length == 0) return true;
         if (text.Length >= 2 && text[0] == '0')
@@ -76,7 +81,7 @@ public static class AbstractOperations
             if (radix != 0)
             {
                 if (text.Length == 2) return false;
-                foreach (var ch in text.AsSpan(2))
+                foreach (var ch in text[2..])
                 {
                     var digit = ch switch { >= '0' and <= '9' => ch - '0', >= 'a' and <= 'f' => ch - 'a' + 10, >= 'A' and <= 'F' => ch - 'A' + 10, _ => -1 };
                     if (digit < 0 || digit >= radix) return false;
@@ -85,19 +90,19 @@ public static class AbstractOperations
                 return true;
             }
         }
-        var digits = text[0] is '+' or '-' ? text.AsSpan(1) : text.AsSpan();
+        var digits = text[0] is '+' or '-' ? text[1..] : text;
         if (digits.IsEmpty) return false;
         foreach (var ch in digits)
             if (ch is < '0' or > '9') return false;
         return BigInt.TryParse(text, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out value);
     }
 
-    internal static double StringToNumber(string text)
+    internal static double StringToNumber(string source)
     {
-        text = TrimNumericString(text);
+        var text = TrimNumericString(source);
         if (text.Length == 0) return 0;
         if (text is "Infinity" or "+Infinity") return double.PositiveInfinity;
-        if (text == "-Infinity") return double.NegativeInfinity;
+        if (text is "-Infinity") return double.NegativeInfinity;
         if (text.Length >= 2 && text[0] == '0' && text[1] is 'x' or 'X' or 'o' or 'O' or 'b' or 'B')
             return TryParseBigInt(text, out var integer) ? (double)integer : double.NaN;
         foreach (var ch in text)
@@ -105,7 +110,7 @@ public static class AbstractOperations
         return double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var number) ? number : double.NaN;
     }
 
-    private static string TrimNumericString(string text)
+    private static ReadOnlySpan<char> TrimNumericString(ReadOnlySpan<char> text)
     {
         var start = 0;
         var end = text.Length;
@@ -120,19 +125,57 @@ public static class AbstractOperations
     internal static string NumberToString(double value)
     {
         if (value == 0) return "0";
-        var text = value.ToString("G", CultureInfo.InvariantCulture);
+        // Invariant round-trip format uses at most 17 significant digits and a three-digit exponent.
+        Span<char> buffer = stackalloc char[32];
+        if (!value.TryFormat(buffer, out var length, "R", CultureInfo.InvariantCulture))
+            throw new InvalidOperationException("Number formatting exceeded the buffer");
+        var text = buffer[..length];
         var exponentIndex = text.IndexOf('E');
-        if (exponentIndex < 0) return text;
-        var exponent = int.Parse(text.AsSpan(exponentIndex + 1), CultureInfo.InvariantCulture);
+        if (exponentIndex < 0) return new string(text);
+        var exponent = int.Parse(text[(exponentIndex + 1)..], CultureInfo.InvariantCulture);
         if (exponent is < -6 or >= 21)
-            return text[..exponentIndex] + "e" + (exponent >= 0 ? "+" : "") + exponent.ToString(CultureInfo.InvariantCulture);
+        {
+            text[exponentIndex] = 'e';
+            var start = exponentIndex + 2; // Keep the sign and skip exponent padding.
+            var digits = text[start..].TrimStart('0');
+            digits.CopyTo(text[start..]);
+            return new string(text[..(start + digits.Length)]);
+        }
 
-        var negative = text[0] == '-';
-        var mantissa = text[(negative ? 1 : 0)..exponentIndex].Replace(".", "", StringComparison.Ordinal);
+        // JavaScript uses fixed notation for exponents in [-6, 21).
+        Span<char> result = stackalloc char[32];
+        var signLength = text[0] == '-' ? 1 : 0;
+        if (signLength != 0) result[0] = '-';
+        var mantissa = text[signLength..exponentIndex];
+        if (mantissa.Length > 1)
+        {
+            mantissa[2..].CopyTo(mantissa[1..]);
+            mantissa = mantissa[..^1];
+        }
+
+        var output = result[signLength..];
         var decimalIndex = exponent + 1;
-        var expanded = decimalIndex <= 0 ? "0." + new string('0', -decimalIndex) + mantissa
-            : decimalIndex >= mantissa.Length ? mantissa + new string('0', decimalIndex - mantissa.Length)
-            : mantissa.Insert(decimalIndex, ".");
-        return negative ? "-" + expanded : expanded;
+        if (decimalIndex <= 0)
+        {
+            output[0] = '0';
+            output[1] = '.';
+            output.Slice(2, -decimalIndex).Fill('0');
+            mantissa.CopyTo(output[(2 - decimalIndex)..]);
+            length = 2 - decimalIndex + mantissa.Length;
+        }
+        else if (decimalIndex >= mantissa.Length)
+        {
+            mantissa.CopyTo(output);
+            output[mantissa.Length..decimalIndex].Fill('0');
+            length = decimalIndex;
+        }
+        else
+        {
+            mantissa[..decimalIndex].CopyTo(output);
+            output[decimalIndex] = '.';
+            mantissa[decimalIndex..].CopyTo(output[(decimalIndex + 1)..]);
+            length = mantissa.Length + 1;
+        }
+        return new string(result[..(signLength + length)]);
     }
 }

@@ -6,75 +6,80 @@ namespace ShoneJs.Runtime;
 /// <summary>A lexical scope whose bindings may remain uninitialized until declaration execution.</summary>
 public sealed class EnvironmentRecord(EnvironmentRecord? parent = null)
 {
-    private sealed class Binding(bool mutable, bool lexical)
+    internal sealed class Binding(bool mutable, bool lexical)
     {
-        public readonly bool Mutable = mutable;
-        public readonly bool Lexical = lexical;
-        public bool Initialized;
-        public JsValue Value;
-        public Func<JsValue>? ReadAlias;
+        internal bool Lexical { get; } = lexical;
+        private bool _initialized;
+        private JsValue _value;
+        private Func<JsValue>? _readAlias;
+
+        internal void Initialize(JsValue value)
+        {
+            _value = value;
+            _initialized = true;
+        }
+
+        internal void InitializeImport(Func<JsValue> read)
+        {
+            _readAlias = read;
+            _initialized = true;
+        }
+
+        internal JsValue Read(string name)
+        {
+            CheckInitialized(name);
+            return _readAlias is { } read ? read() : _value;
+        }
+
+        internal void Write(string name, JsValue value)
+        {
+            CheckInitialized(name);
+            if (!mutable) throw JsException.TypeError($"Assignment to constant '{name}'");
+            _value = value;
+        }
+
+        // Uninitialized lexical bindings implement the temporal dead zone.
+        private void CheckInitialized(string name)
+        {
+            if (!_initialized) throw JsException.ReferenceError($"Cannot access '{name}' before initialization");
+        }
     }
 
-    private readonly Dictionary<string, Binding> _bindings = new(StringComparer.Ordinal);
+    private Dictionary<string, Binding>? _bindings;
     public EnvironmentRecord? Parent { get; } = parent;
-    internal bool HasOwn(string name) => _bindings.ContainsKey(name);
-    internal bool HasLexical(string name) => _bindings.TryGetValue(name, out var binding) && binding.Lexical;
+    internal bool HasOwn(string name) => _bindings?.ContainsKey(name) == true;
+    internal bool HasLexical(string name) => _bindings?.TryGetValue(name, out var binding) == true && binding.Lexical;
 
     /// <summary>Creates and initializes a mutable non-lexical binding.</summary>
-    public void Declare(string name, JsValue value)
-    {
-        Create(name, mutable: true, lexical: false);
-        Initialize(name, value);
-    }
+    public void Declare(string name, JsValue value) => Create(name, mutable: true, lexical: false).Initialize(value);
 
-    internal void Create(string name, bool mutable, bool lexical)
+    internal Binding Create(string name, bool mutable, bool lexical)
     {
-        if (!_bindings.TryAdd(name, new Binding(mutable, lexical)))
+        var binding = new Binding(mutable, lexical);
+        if (!(_bindings ??= new(StringComparer.Ordinal)).TryAdd(name, binding))
             throw new JsException(JsValue.From(new JsError("SyntaxError", $"Identifier '{name}' has already been declared")));
+        return binding;
     }
 
-    internal void CreateImport(string name, Func<JsValue> read)
-    {
-        Create(name, mutable: false, lexical: true);
-        var binding = _bindings[name];
-        binding.ReadAlias = read;
-        binding.Initialized = true;
-    }
+    internal void CreateImport(string name, Func<JsValue> read) => Create(name, mutable: false, lexical: true).InitializeImport(read);
 
-    internal void Initialize(string name, JsValue value)
-    {
-        var binding = _bindings[name];
-        binding.Value = value;
-        binding.Initialized = true;
-    }
+    internal void Initialize(string name, JsValue value) =>
+        (_bindings?[name] ?? throw new KeyNotFoundException()).Initialize(value);
 
-    internal EnvironmentRecord? Resolve(string name)
+    internal Binding? ResolveBinding(string name, out EnvironmentRecord? environment)
     {
-        for (EnvironmentRecord? scope = this; scope is not null; scope = scope.Parent)
-            if (scope.HasOwn(name)) return scope;
+        for (environment = this; environment is not null; environment = environment.Parent)
+            if (environment._bindings?.TryGetValue(name, out var binding) == true) return binding;
         return null;
     }
 
-    public JsValue Get(string name)
-    {
-        var scope = Resolve(name) ?? throw JsException.ReferenceError($"'{name}' is not defined");
-        var binding = scope.GetBinding(name);
-        return binding.ReadAlias is { } read ? read() : binding.Value;
-    }
+    public JsValue Get(string name) => RequireBinding(name).Read(name);
 
-    public void Set(string name, JsValue value)
-    {
-        var scope = Resolve(name) ?? throw JsException.ReferenceError($"'{name}' is not defined");
-        var binding = scope.GetBinding(name);
-        if (!binding.Mutable) throw JsException.TypeError($"Assignment to constant '{name}'");
-        binding.Value = value;
-    }
+    public void Set(string name, JsValue value) => RequireBinding(name).Write(name, value);
 
-    // Uninitialized lexical bindings implement the temporal dead zone.
-    private Binding GetBinding(string name)
+    private Binding RequireBinding(string name)
     {
-        var binding = _bindings[name];
-        if (!binding.Initialized) throw JsException.ReferenceError($"Cannot access '{name}' before initialization");
-        return binding;
+        ArgumentNullException.ThrowIfNull(name);
+        return ResolveBinding(name, out _) ?? throw JsException.ReferenceError($"'{name}' is not defined");
     }
 }

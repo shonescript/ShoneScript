@@ -1,6 +1,8 @@
 // Copyright (c) 2026 Shone
 // SPDX-License-Identifier: MIT
 
+using System.Collections.Concurrent;
+using System.Runtime.ExceptionServices;
 using Sdcb.Arithmetic;
 using ShoneJs.Parsing;
 
@@ -31,13 +33,37 @@ public sealed partial class Interpreter
     /// <summary>Maximum loop and queued-job steps permitted by one script execution.</summary>
     public int MaximumLoopIterations { get; set; } = 1_000_000;
 
-    private sealed class ReturnSignal(JsValue value) : Exception { public JsValue Value { get; } = value; }
-    private sealed class BreakSignal : Exception;
-    private sealed class ContinueSignal : Exception;
+    private enum CompletionKind { Normal, Return, Break, Continue }
+
+    private readonly record struct Completion(CompletionKind Kind, JsValue Value)
+    {
+        public bool IsAbrupt => Kind != CompletionKind.Normal;
+        public static Completion Normal(JsValue value) => new(CompletionKind.Normal, value);
+        public static Completion Return(JsValue value) => new(CompletionKind.Return, value);
+        public static Completion Break => new(CompletionKind.Break, JsValue.Undefined);
+        public static Completion Continue => new(CompletionKind.Continue, JsValue.Undefined);
+    }
+
+    private static JsValue ScriptCompletionValue(Completion completion) => completion.Kind switch
+    {
+        CompletionKind.Normal => completion.Value,
+        _ => throw UnexpectedCompletion(completion.Kind)
+    };
+
+    private static JsValue FunctionCompletionValue(Completion completion) => completion.Kind switch
+    {
+        CompletionKind.Normal => JsValue.Undefined,
+        CompletionKind.Return => completion.Value,
+        _ => throw UnexpectedCompletion(completion.Kind)
+    };
+
+    // The parser rejects these escapes. The public interpreter also accepts manually built ASTs.
+    private static JsException UnexpectedCompletion(CompletionKind kind) =>
+        new(JsValue.From(new JsError("SyntaxError", $"Unexpected '{kind.ToString().ToLowerInvariant()}'")));
 
     public Interpreter() : this(enableBigFloat: false) { }
 
-    internal Interpreter(bool enableBigFloat)
+    internal Interpreter(bool enableBigFloat, bool isolateSymbolRegistry = false)
     {
         _env = _varEnv = _global;
         _objectPrototype = Builtins.ObjectBuiltins.Install(SetGlobal, () => _arrayPrototype);
@@ -71,7 +97,7 @@ public sealed partial class Interpreter
         }
         SetGlobal("BigInt", JsValue.From(bigInt));
         if (enableBigFloat) Builtins.BigFloatBuiltins.Install(SetGlobal, _objectPrototype);
-        InstallSymbol();
+        InstallSymbol(isolateSymbolRegistry ? new(StringComparer.Ordinal) : SymbolRegistry);
         Builtins.WeakBuiltins.Install(SetGlobal, _objectPrototype, static symbol => symbol.RegistryKey is not null);
         Builtins.TypedArrayBuiltins.Install(SetGlobal, _objectPrototype);
         foreach (var name in new[] { "Error", "TypeError", "ReferenceError", "RangeError", "SyntaxError", "EvalError", "URIError" })
@@ -87,16 +113,16 @@ public sealed partial class Interpreter
         _promises.Install(SetGlobal);
     }
 
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, JsSymbol> SymbolRegistry = new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, JsSymbol> SymbolRegistry = new(StringComparer.Ordinal);
 
-    private void InstallSymbol()
+    private void InstallSymbol(ConcurrentDictionary<string, JsSymbol> registry)
     {
         var symbol = new JsFunction(args => JsValue.From(new JsSymbol(args.Length == 0 || args[0].Type == JsType.Undefined
             ? null : AbstractOperations.ToPrimitive(args[0], preferString: true).ToJsString())));
         AddMethod("for", args =>
         {
             var key = AbstractOperations.ToPrimitive(args.Length > 0 ? args[0] : JsValue.Undefined, preferString: true).ToJsString();
-            return JsValue.From(SymbolRegistry.GetOrAdd(key, static name => new JsSymbol(name) { RegistryKey = name }));
+            return JsValue.From(registry.GetOrAdd(key, static name => new JsSymbol(name) { RegistryKey = name }));
         });
         AddMethod("keyFor", args =>
         {
@@ -115,7 +141,10 @@ public sealed partial class Interpreter
     }
 
     /// <summary>Runs pending promise jobs synchronously, subject to the execution iteration limit.</summary>
-    public void DrainJobs() => RunGuarded(() => { _promises.DrainJobs(ConsumeIteration); return JsValue.Undefined; });
+    public void DrainJobs() => DrainJobs(default);
+
+    internal void DrainJobs(CancellationToken cancellationToken) =>
+        RunGuarded(() => { _promises.DrainJobs(ConsumeIteration); return JsValue.Undefined; }, cancellationToken);
 
     internal JsValue RunGuarded(Func<JsValue> run, CancellationToken cancellationToken = default)
     {
@@ -242,7 +271,8 @@ public sealed partial class Interpreter
     /// <summary>Executes parsed statements as a non-strict script and returns its completion value.</summary>
     public JsValue Execute(List<Stmt> statements) => Execute(statements, false);
 
-    internal JsValue Execute(List<Stmt> statements, bool strict) => RunGuarded(() => ExecuteScript(statements, strict));
+    internal JsValue Execute(List<Stmt> statements, bool strict, CancellationToken cancellationToken = default) =>
+        RunGuarded(() => ExecuteScript(statements, strict), cancellationToken);
 
     private JsValue ExecuteScript(List<Stmt> statements, bool strict)
     {
@@ -254,7 +284,7 @@ public sealed partial class Interpreter
         try
         {
             PrepareScope(statements, _env, functionScope: true);
-            return ExecuteList(statements);
+            return ScriptCompletionValue(ExecuteList(statements));
         }
         catch (JsException error)
         {
@@ -267,16 +297,20 @@ public sealed partial class Interpreter
         }
     }
 
-    private JsValue ExecuteList(IEnumerable<Stmt> statements)
+    private Completion ExecuteList(IEnumerable<Stmt> statements)
     {
-        var result = JsValue.Undefined;
+        var result = Completion.Normal(JsValue.Undefined);
         foreach (var statement in statements)
         {
-            var value = Exec(statement);
-            if (statement is not (VarStmt or VarListStmt or FunctionStmt or TypeAliasStmt or InterfaceStmt or EnumStmt)) result = value;
+            var completion = Exec(statement);
+            if (completion.IsAbrupt) return completion;
+            if (ProducesListValue(statement)) result = completion;
         }
         return result;
     }
+
+    private static bool ProducesListValue(Stmt statement) =>
+        statement is not (VarStmt or VarListStmt or FunctionStmt or TypeAliasStmt or InterfaceStmt or EnumStmt);
 
     private static IEnumerable<VarStmt> ImmediateVariables(IEnumerable<Stmt> statements) => statements.SelectMany(statement => statement switch
     {
@@ -373,34 +407,35 @@ public sealed partial class Interpreter
         target.Set(name, value);
     }
 
-    private JsValue Exec(Stmt statement)
+    private Completion Exec(Stmt statement)
     {
         ConsumeStep();
         return ExecCore(statement);
     }
 
-    private JsValue ExecCore(Stmt statement) => statement switch
+    private Completion ExecCore(Stmt statement) => statement switch
     {
         BlockStmt block => ExecuteBlock(block),
         VarStmt variable => Declare(variable),
         VarListStmt list => ExecuteList(list.Declarations),
-        FunctionStmt or TypeAliasStmt or InterfaceStmt => JsValue.Undefined,
-        EnumStmt declaration => ExecuteEnum(declaration),
-        ExprStmt expression => Eval(expression.Expression),
-        IfStmt branch => Eval(branch.Test).ToBoolean() ? Exec(branch.Then) : branch.Else is null ? JsValue.Undefined : Exec(branch.Else),
+        FunctionStmt or TypeAliasStmt or InterfaceStmt => Completion.Normal(JsValue.Undefined),
+        EnumStmt declaration => Completion.Normal(ExecuteEnum(declaration)),
+        ExprStmt expression => Completion.Normal(Eval(expression.Expression)),
+        IfStmt branch => Eval(branch.Test).ToBoolean() ? Exec(branch.Then)
+            : branch.Else is null ? Completion.Normal(JsValue.Undefined) : Exec(branch.Else),
         WhileStmt loop => While(loop.Test, loop.Body),
         DoWhileStmt loop => While(loop.Test, loop.Body, runFirst: true),
         ForStmt loop => For(loop),
         SwitchStmt selection => Switch(selection),
         TryStmt attempt => Try(attempt),
-        BreakStmt => throw new BreakSignal(),
-        ContinueStmt => throw new ContinueSignal(),
-        ReturnStmt returned => throw new ReturnSignal(returned.Value is null ? JsValue.Undefined : Eval(returned.Value)),
+        BreakStmt => Completion.Break,
+        ContinueStmt => Completion.Continue,
+        ReturnStmt returned => Completion.Return(returned.Value is null ? JsValue.Undefined : Eval(returned.Value)),
         ThrowStmt thrown => throw new JsException(Eval(thrown.Value)),
         _ => throw new NotSupportedException($"Unsupported statement {statement.GetType().Name}")
     };
 
-    private JsValue ExecuteBlock(BlockStmt block)
+    private Completion ExecuteBlock(BlockStmt block)
     {
         var previous = _env;
         _env = new EnvironmentRecord(previous);
@@ -412,14 +447,14 @@ public sealed partial class Interpreter
         finally { _env = previous; }
     }
 
-    private JsValue Declare(VarStmt variable)
+    private Completion Declare(VarStmt variable) =>
+        InitializeVariable(variable, variable.Init is null ? JsValue.Undefined : Eval(variable.Init));
+
+    private Completion InitializeVariable(VarStmt variable, JsValue value)
     {
-        if (variable.Kind == TokenKind.Var)
-        {
-            if (variable.Init is not null) WriteBinding(_varEnv, variable.Name, Eval(variable.Init));
-        }
-        else _env.Initialize(variable.Name, variable.Init is null ? JsValue.Undefined : Eval(variable.Init));
-        return JsValue.Undefined;
+        if (variable.Kind != TokenKind.Var) _env.Initialize(variable.Name, value);
+        else if (variable.Init is not null) WriteBinding(_varEnv, variable.Name, value);
+        return Completion.Normal(JsValue.Undefined);
     }
 
     private void ConsumeIteration()
@@ -429,49 +464,41 @@ public sealed partial class Interpreter
         _remainingIterations--;
     }
 
-    private JsValue While(Expr test, Stmt body, bool runFirst = false)
+    private Completion While(Expr test, Stmt body, bool runFirst = false)
     {
-        var result = JsValue.Undefined;
+        var result = Completion.Normal(JsValue.Undefined);
         while (runFirst || Eval(test).ToBoolean())
         {
             runFirst = false;
             ConsumeIteration();
-            try { result = Exec(body); }
-            catch (ContinueSignal) { }
-            catch (BreakSignal) { break; }
+            var completion = Exec(body);
+            if (completion.Kind == CompletionKind.Break) break;
+            if (completion.Kind == CompletionKind.Return) return completion;
+            if (!completion.IsAbrupt) result = completion;
         }
         return result;
     }
 
-    private JsValue For(ForStmt loop)
+    private Completion For(ForStmt loop)
     {
         var previous = _env;
         try
         {
-            var lexical = loop.Init is null ? [] : ImmediateVariables([loop.Init]).Where(variable => variable.Kind != TokenKind.Var).ToArray();
-            if (lexical.Length > 0)
+            var lexical = PrepareForScope(loop, previous);
+            if (loop.Init is not null)
             {
-                _env = new EnvironmentRecord(previous);
-                foreach (var variable in lexical) _env.Create(variable.Name, variable.Kind == TokenKind.Let, lexical: true);
+                var initial = Exec(loop.Init);
+                if (initial.IsAbrupt) return initial;
             }
-            if (loop.Init is not null) Exec(loop.Init);
-            var result = JsValue.Undefined;
+            var result = Completion.Normal(JsValue.Undefined);
             while (loop.Test is null || Eval(loop.Test).ToBoolean())
             {
                 ConsumeIteration();
-                try { result = Exec(loop.Body); }
-                catch (ContinueSignal) { }
-                catch (BreakSignal) { break; }
-                if (lexical.Length > 0)
-                {
-                    var current = _env;
-                    _env = new EnvironmentRecord(previous);
-                    foreach (var variable in lexical)
-                    {
-                        _env.Create(variable.Name, variable.Kind == TokenKind.Let, lexical: true);
-                        _env.Initialize(variable.Name, current.Get(variable.Name));
-                    }
-                }
+                var completion = Exec(loop.Body);
+                if (completion.Kind == CompletionKind.Break) break;
+                if (completion.Kind == CompletionKind.Return) return completion;
+                if (!completion.IsAbrupt) result = completion;
+                AdvanceForScope(lexical, previous);
                 if (loop.Update is not null) Eval(loop.Update);
             }
             return result;
@@ -479,7 +506,30 @@ public sealed partial class Interpreter
         finally { _env = previous; }
     }
 
-    private JsValue Switch(SwitchStmt selection)
+    private VarStmt[] PrepareForScope(ForStmt loop, EnvironmentRecord parent)
+    {
+        var lexical = loop.Init is null ? [] : ImmediateVariables([loop.Init]).Where(variable => variable.Kind != TokenKind.Var).ToArray();
+        if (lexical.Length > 0)
+        {
+            _env = new EnvironmentRecord(parent);
+            foreach (var variable in lexical) _env.Create(variable.Name, variable.Kind == TokenKind.Let, lexical: true);
+        }
+        return lexical;
+    }
+
+    private void AdvanceForScope(VarStmt[] lexical, EnvironmentRecord parent)
+    {
+        if (lexical.Length == 0) return;
+        var current = _env;
+        _env = new EnvironmentRecord(parent);
+        foreach (var variable in lexical)
+        {
+            _env.Create(variable.Name, variable.Kind == TokenKind.Let, lexical: true);
+            _env.Initialize(variable.Name, current.Get(variable.Name));
+        }
+    }
+
+    private Completion Switch(SwitchStmt selection)
     {
         var value = Eval(selection.Discriminant);
         var previous = _env;
@@ -496,43 +546,60 @@ public sealed partial class Interpreter
                 else if (AbstractOperations.StrictEqual(Eval(test), value)) { match = i; break; }
             }
             if (match < 0) match = fallback;
-            var result = JsValue.Undefined;
+            var result = Completion.Normal(JsValue.Undefined);
             if (match < 0) return result;
-            try
+            for (var i = match; i < selection.Cases.Count; i++)
             {
-                for (var i = match; i < selection.Cases.Count; i++) result = ExecuteList(selection.Cases[i].Body);
+                var completion = ExecuteList(selection.Cases[i].Body);
+                if (completion.Kind == CompletionKind.Break) break;
+                if (completion.IsAbrupt) return completion;
+                result = completion;
             }
-            catch (BreakSignal) { }
             return result;
         }
         finally { _env = previous; }
     }
 
-    private JsValue Try(TryStmt attempt)
+    private Completion Try(TryStmt attempt)
     {
-        var abruptHostExit = false;
-        try { return ExecuteBlock(attempt.Body); }
-        catch (JsException error) when (attempt.CatchBody is not null)
+        var result = default(Completion);
+        ExceptionDispatchInfo? pendingThrow = null;
+        try
         {
-            AttachErrorPrototype(error);
-            var previous = _env;
-            _env = new EnvironmentRecord(previous);
-            try
+            try { result = ExecuteBlock(attempt.Body); }
+            catch (JsException error) when (attempt.CatchBody is not null)
             {
-                if (attempt.CatchName is not null) _env.Declare(attempt.CatchName, error.Value);
-                return ExecuteBlock(attempt.CatchBody);
+                var previous = _env;
+                try
+                {
+                    EnterCatchScope(attempt, error);
+                    result = ExecuteBlock(attempt.CatchBody);
+                }
+                finally { _env = previous; }
             }
-            finally { _env = previous; }
         }
-        catch (Exception error) when (error is not (JsException or ReturnSignal or BreakSignal or ContinueSignal))
+        catch (JsException error) when (attempt.FinallyBody is not null)
         {
-            abruptHostExit = true;
-            throw;
+            pendingThrow = ExceptionDispatchInfo.Capture(error);
         }
-        finally
-        {
-            if (!abruptHostExit && attempt.FinallyBody is not null) ExecuteBlock(attempt.FinallyBody);
-        }
+
+        // Host failures escape before JS finally runs, including cancellation and budget failures.
+        return attempt.FinallyBody is null ? result
+            : FinishTry(result, pendingThrow, ExecuteBlock(attempt.FinallyBody));
+    }
+
+    private void EnterCatchScope(TryStmt attempt, JsException error)
+    {
+        AttachErrorPrototype(error);
+        _env = new EnvironmentRecord(_env);
+        if (attempt.CatchName is not null) _env.Declare(attempt.CatchName, error.Value);
+    }
+
+    private static Completion FinishTry(Completion result, ExceptionDispatchInfo? pendingThrow, Completion final)
+    {
+        if (final.IsAbrupt) return final;
+        pendingThrow?.Throw();
+        return result;
     }
 
     private void AttachErrorPrototype(JsException error)
@@ -565,10 +632,8 @@ public sealed partial class Interpreter
                 BindParameters(parameters, arguments);
                 if (expressionBody is not null) return Eval(expressionBody);
                 PrepareScope(body!.Body, _env, functionScope: true, parameterScope: _varEnv);
-                ExecuteList(body.Body);
-                return JsValue.Undefined;
+                return FunctionCompletionValue(ExecuteList(body.Body));
             }
-            catch (ReturnSignal returned) { return returned.Value; }
             finally
             {
                 RestoreContext(previous);

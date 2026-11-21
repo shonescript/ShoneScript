@@ -8,9 +8,12 @@ namespace ShoneJs.Parsing;
 
 public sealed class Lexer(string source, CancellationToken cancellationToken = default)
 {
+    private const int CompactionBatch = 64;
     private int _offset, _line = 1, _column = 1, _charactersRead;
     private bool _lineBefore;
     private readonly List<Token> _tokens = [];
+    private int _firstTokenIndex;
+    private bool DiscardConsumedTokens { get; init; }
     private readonly Stack<int> _templateBraces = new();
     private readonly Stack<bool> _scanParens = new();
     private readonly Stack<bool> _scanBraces = new();
@@ -32,9 +35,14 @@ public sealed class Lexer(string source, CancellationToken cancellationToken = d
         ["continue"] = TokenKind.Continue, ["do"] = TokenKind.Do
     };
 
+    // The engine gives each lexer a single parser. Public lexers keep token history for Scan().
+    internal static Lexer CreateForParser(string source, CancellationToken cancellationToken = default) =>
+        new(source, cancellationToken) { DiscardConsumedTokens = true };
+
     // Tokenizes once and then reuses the same list; callers may safely invoke Scan repeatedly.
     public IReadOnlyList<Token> Scan()
     {
+        if (DiscardConsumedTokens) throw new InvalidOperationException("The lexer is owned by a parser");
         cancellationToken.ThrowIfCancellationRequested();
         while (_tokens.Count == 0 || _tokens[^1].Kind != TokenKind.End)
             ScanNext(standalone: true);
@@ -43,23 +51,58 @@ public sealed class Lexer(string source, CancellationToken cancellationToken = d
 
     internal Token TokenAt(int index)
     {
-        while (_tokens.Count <= index && (_tokens.Count == 0 || _tokens[^1].Kind != TokenKind.End))
+        var slot = index - _firstTokenIndex;
+        while (_tokens.Count <= slot && (_tokens.Count == 0 || _tokens[^1].Kind != TokenKind.End))
             ScanNext(standalone: false);
-        return _tokens[Math.Min(index, _tokens.Count - 1)];
+        return _tokens[Math.Min(slot, _tokens.Count - 1)];
+    }
+
+    internal void DiscardBefore(int index)
+    {
+        if (!DiscardConsumedTokens) return;
+        var count = index - _firstTokenIndex;
+        // Moving at most as many tokens as we discard keeps replay after a long rewind linear.
+        if (count < CompactionBatch || count < _tokens.Count - count) return;
+        RemoveSlashSnapshots(0, count);
+        _tokens.RemoveRange(0, count);
+        _firstTokenIndex += count;
+        TrimBufferCapacity();
     }
 
     internal void ReadRegExp(int index)
     {
-        var slash = _tokens[index];
-        _tokens.RemoveRange(index, _tokens.Count - index);
+        var slot = index - _firstTokenIndex;
+        var slash = _tokens[slot];
+        _slashTemplates.Remove(index, out var braces);
+        RemoveSlashSnapshots(slot + 1, _tokens.Count - slot - 1);
+        _tokens.RemoveRange(slot, _tokens.Count - slot);
+        if (DiscardConsumedTokens) TrimBufferCapacity();
         _offset = slash.Offset + 1;
         _line = slash.Line;
         _column = slash.Column + 1;
         _lineBefore = slash.HasLineTerminatorBefore;
         _templateBraces.Clear();
-        if (_slashTemplates.Remove(index, out var braces))
+        if (braces is not null)
             for (var i = braces.Length - 1; i >= 0; i--) _templateBraces.Push(braces[i]);
         ScanRegExp(slash.Start);
+    }
+
+    private void RemoveSlashSnapshots(int start, int count)
+    {
+        if (_slashTemplates.Count == 0) return;
+        for (var i = start; i < start + count; i++)
+            if (_tokens[i].Kind is TokenKind.Slash or TokenKind.SlashEqual)
+                _slashTemplates.Remove(_firstTokenIndex + i);
+    }
+
+    private void TrimBufferCapacity()
+    {
+        const int normalCapacity = CompactionBatch * 2;
+        if (_tokens.Capacity > normalCapacity && _tokens.Count <= _tokens.Capacity / 4)
+            _tokens.Capacity = Math.Max(normalCapacity, _tokens.Count * 2);
+        var slashCapacity = _slashTemplates.EnsureCapacity(0);
+        if (slashCapacity > normalCapacity && _slashTemplates.Count <= slashCapacity / 4)
+            _slashTemplates.TrimExcess();
     }
 
     private void ScanNext(bool standalone)
@@ -112,9 +155,9 @@ public sealed class Lexer(string source, CancellationToken cancellationToken = d
                 return;
             }
             if (!standalone && ch == '/' && _templateBraces.Count > 0)
-                _slashTemplates[_tokens.Count] = _templateBraces.ToArray();
-            var previous = _tokens.Count > 0 ? _tokens[^1].Kind : TokenKind.End;
-            var afterProperty = _tokens.Count > 1 && _tokens[^2].Kind is TokenKind.Dot or TokenKind.OptionalChain;
+                _slashTemplates[_firstTokenIndex + _tokens.Count] = _templateBraces.ToArray();
+            var previous = standalone && _tokens.Count > 0 ? _tokens[^1].Kind : TokenKind.End;
+            var afterProperty = standalone && _tokens.Count > 1 && _tokens[^2].Kind is TokenKind.Dot or TokenKind.OptionalChain;
             Add(ch switch
             {
                 '(' => TokenKind.LeftParen, ')' => TokenKind.RightParen,

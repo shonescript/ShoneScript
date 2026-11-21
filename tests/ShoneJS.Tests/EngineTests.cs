@@ -25,4 +25,43 @@ public class EngineTests
     [Fact] public void ThrowsForUnknownIdentifier() => Assert.Equal("ReferenceError", Assert.Throws<JsException>(() => new JsEngine().Evaluate("missing")).ErrorName);
     [Fact] public void ExposesPersistentGlobalBindings() { var engine = new JsEngine(); engine.SetGlobal("seed", JsValue.From(4d)); Assert.Equal(7d, (double)engine.Evaluate("seed + 3").Data!); }
     [Fact] public void EnforcesLoopExecutionBudget() => Assert.Throws<InvalidOperationException>(() => new JsEngine(new JsEngineOptions { MaximumLoopIterations = 3 }).Evaluate("while (true) {}"));
+
+    [Fact]
+    public void AppliesSharedOptionChangesToEachEngine()
+    {
+        var options = new JsEngineOptions();
+        var engines = new[] { new JsEngine(options), new JsEngine(options) };
+        var script = engines[0].ParseScript("1 + 2");
+        foreach (var engine in engines) Assert.Equal(3d, engine.Execute(script).ToNumber());
+
+        options.MaximumSteps = 1;
+        Assert.Equal(1, options.MaximumExecutionSteps);
+        foreach (var engine in engines) Assert.Throws<InvalidOperationException>(() => engine.Execute(script));
+
+        options.MaximumExecutionSteps = 20;
+        Assert.Equal(20, options.MaximumSteps);
+        foreach (var engine in engines) Assert.Equal(3d, engine.Execute(script).ToNumber());
+
+        using var lifetime = new CancellationTokenSource();
+        lifetime.Cancel();
+        options.CancellationToken = lifetime.Token;
+        foreach (var engine in engines) Assert.Throws<OperationCanceledException>(() => engine.Execute(script));
+    }
+
+    [Fact]
+    public void SymbolRegistrySharesByDefaultAndCanBeIsolatedAtConstruction()
+    {
+        const string source = "Symbol.for('engine-registry-test')";
+        var shared = new JsEngine().Evaluate(source);
+        Assert.Same(shared.Data, new JsEngine().Evaluate(source).Data);
+
+        var options = new JsEngineOptions { IsolateSymbolRegistry = true };
+        var first = new JsEngine(options);
+        var second = new JsEngine(options);
+        var isolated = first.Evaluate(source);
+        Assert.NotSame(shared.Data, isolated.Data);
+        Assert.NotSame(isolated.Data, second.Evaluate(source).Data);
+        Assert.Same(isolated.Data, first.Evaluate(source).Data);
+        Assert.Equal("engine-registry-test", first.Evaluate($"Symbol.keyFor({source})").ToJsString());
+    }
 }

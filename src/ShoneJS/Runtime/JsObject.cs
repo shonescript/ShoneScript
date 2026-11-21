@@ -84,11 +84,52 @@ public class JsObject
     }
 
     /// <summary>Returns own string keys with array indices first in ascending numeric order.</summary>
-    public virtual IEnumerable<string> OwnPropertyKeys() => _properties.Keys
-        .Select(key => (Key: key, Index: TryArrayIndex(key, out var index) ? index : uint.MaxValue))
-        .OrderBy(entry => entry.Index)
-        .Select(entry => entry.Key)
-        .ToArray();
+    public virtual IEnumerable<string> OwnPropertyKeys()
+    {
+        var count = _properties.Count;
+        if (count == 0) return Array.Empty<string>();
+        var keys = new string[count];
+        _properties.Keys.CopyTo(keys, 0);
+        if (count == 1) return keys;
+
+        // Keep the copied insertion order when it already matches JavaScript key order.
+        var seenName = false;
+        uint previousIndex = 0;
+        foreach (var key in keys)
+        {
+            if (!TryArrayIndex(key, out var index))
+                seenName = true;
+            else if (seenName || index < previousIndex)
+            {
+                OrderArrayIndices(keys);
+                break;
+            }
+            else
+                previousIndex = index;
+        }
+        return keys;
+    }
+
+    private static void OrderArrayIndices(string[] keys)
+    {
+        var indices = new List<(uint Index, string Key)>();
+        var nameCount = 0;
+        var needsSort = false;
+        foreach (var key in keys)
+        {
+            if (TryArrayIndex(key, out var index))
+            {
+                if (indices.Count != 0 && index < indices[^1].Index) needsSort = true;
+                indices.Add((index, key));
+            }
+            else keys[nameCount++] = key;
+        }
+
+        // The remaining names retain their insertion order. Only the numeric keys may need sorting.
+        Array.Copy(keys, 0, keys, indices.Count, nameCount);
+        if (needsSort) indices.Sort(static (left, right) => left.Index.CompareTo(right.Index));
+        for (var i = 0; i < indices.Count; i++) keys[i] = indices[i].Key;
+    }
 
     public bool HasOwn(string key) => GetOwnProperty(key) is not null;
 
@@ -152,12 +193,16 @@ public class JsObject
         index = 0;
         if (key.Length is 0 or > 10 || (key.Length > 1 && key[0] == '0'))
             return false;
+        ulong number = 0;
         foreach (var character in key)
         {
             if (character is < '0' or > '9')
                 return false;
+            number = number * 10 + (uint)(character - '0');
         }
-        return uint.TryParse(key, NumberStyles.None, CultureInfo.InvariantCulture, out index) && index < uint.MaxValue;
+        if (number > uint.MaxValue) return false;
+        index = (uint)number;
+        return index < uint.MaxValue;
     }
 }
 

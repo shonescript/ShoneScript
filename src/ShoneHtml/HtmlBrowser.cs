@@ -7,12 +7,24 @@ namespace ShoneHtml;
 /// <summary>Screen dimensions in CSS pixels and the current window's device scale.</summary>
 public readonly record struct HtmlDisplayMetrics(int Width, int Height, double DevicePixelRatio);
 
-public enum HtmlBrowserScriptMode { Auto, Disabled, TrustedInProcess }
+/// <summary>Controls JavaScript execution and the network transport used by browser navigation.</summary>
+public enum HtmlBrowserScriptMode
+{
+    /// <summary>Uses <see cref="Isolated"/> unless <see cref="HtmlBrowserOptions.EnableTrustedScripts"/> opts into <see cref="TrustedInProcess"/>.</summary>
+    Auto,
+    /// <summary>Uses the restricted public network transport and leaves page scripts disabled.</summary>
+    Disabled,
+    /// <summary>Uses the trusted transport and runs scripts in process when enabled. For application-trusted content only.</summary>
+    TrustedInProcess,
+    /// <summary>Uses the restricted public network transport. Runs enabled scripts only in a released, available isolated renderer and renders without scripts otherwise.</summary>
+    Isolated
+}
 
 public sealed class HtmlBrowserOptions
 {
-    /// <summary>Runs scripts in the browser process for explicitly trusted applications only.</summary>
+    /// <summary>Legacy opt-in to <see cref="HtmlBrowserScriptMode.TrustedInProcess"/> when <see cref="ScriptMode"/> is <see cref="HtmlBrowserScriptMode.Auto"/>.</summary>
     public bool EnableTrustedScripts { get; init; }
+    /// <summary>Selects the browser script policy. The default is <see cref="HtmlBrowserScriptMode.Auto"/>.</summary>
     public HtmlBrowserScriptMode ScriptMode { get; init; }
     // Modern sites such as Bing commonly split the page across many image, CSS and script resources.
     public int MaximumResponseBytes { get; init; } = 8 * 1024 * 1024;
@@ -23,6 +35,7 @@ public sealed class HtmlBrowserOptions
     public int MaximumRedirects { get; init; } = 10;
     public int MaximumHistoryEntries { get; init; } = 50;
     public TimeSpan RequestTimeout { get; init; } = TimeSpan.FromSeconds(20);
+    /// <summary>Configures script execution within the selected <see cref="ScriptMode"/>. Disabling scripts here also suppresses renderer startup.</summary>
     public HtmlPageOptions ScriptOptions { get; init; } = new();
     /// <summary>Optional host display metrics, read on the browser's synchronization context.</summary>
     public Func<HtmlDisplayMetrics>? GetDisplayMetrics { get; init; }
@@ -307,7 +320,8 @@ public sealed class HtmlBrowser : IDisposable
     private bool UsesTrustedTransport => Options.ScriptMode == HtmlBrowserScriptMode.TrustedInProcess ||
         Options.ScriptMode == HtmlBrowserScriptMode.Auto && Options.EnableTrustedScripts;
     private bool RunsScripts => UsesTrustedTransport && Options.ScriptOptions.EnableScripts;
-    private bool WantsRenderer => Options.ScriptMode == HtmlBrowserScriptMode.Auto && Options.ScriptOptions.EnableScripts;
+    private bool WantsRenderer => Options.ScriptOptions.EnableScripts &&
+        (Options.ScriptMode == HtmlBrowserScriptMode.Isolated || Options.ScriptMode == HtmlBrowserScriptMode.Auto && !Options.EnableTrustedScripts);
 
     private Task ApplyRendererResult(HtmlPage page, HtmlRendererResult result)
     {
@@ -350,7 +364,7 @@ public sealed class HtmlBrowser : IDisposable
     {
         if (RunsScripts || !page.Document.QuerySelectorAll("script").Any(HtmlScriptHost.IsExecutableScript))
             return page.ResourceStatus;
-        var status = WantsRenderer && !UsesTrustedTransport ? "Page scripts were not run (isolated renderer unavailable)." :
+        var status = WantsRenderer ? "Page scripts were not run (isolated renderer unavailable)." :
             "Page scripts were not run (disabled).";
         return page.ResourceStatus.Length == 0 ? status : $"{status} {page.ResourceStatus}";
     }

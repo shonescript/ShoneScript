@@ -18,6 +18,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, ParseGoal goal =
         : this(Array.Empty<Token>(), goal, forceStrict, typeScript, cancellationToken) => _lexer = lexer;
 
     private int _index;
+    private int _rewindStart = -1;
     private int _functionDepth, _loopDepth, _switchDepth, _parseDepth;
     private bool _asyncFunction;
     private bool AllowAwait => _asyncFunction || goal == ParseGoal.Module && _functionDepth == 0;
@@ -35,7 +36,25 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, ParseGoal goal =
     private Token Take()
     {
         cancellationToken.ThrowIfCancellationRequested();
-        return TokenAt(_index++);
+        var token = TokenAt(_index++);
+        DiscardConsumedTokens();
+        return token;
+    }
+
+    private void DiscardConsumedTokens() =>
+        _lexer?.DiscardBefore((_rewindStart >= 0 ? _rewindStart : _index) - 1);
+
+    private int BeginSpeculation()
+    {
+        var previous = _rewindStart;
+        if (previous < 0) _rewindStart = _index;
+        return previous;
+    }
+
+    private void EndSpeculation(int previous)
+    {
+        _rewindStart = previous;
+        DiscardConsumedTokens();
     }
 
     private void EnterParse()

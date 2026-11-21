@@ -111,6 +111,7 @@ public sealed partial class Parser
         List<Token> names = [];
         List<TypeParameter> typeParameters = [];
         TypeNode? returnType = null;
+        var previousRewind = BeginSpeculation();
         try
         {
             if (isAsync) Take();
@@ -146,6 +147,7 @@ public sealed partial class Parser
             _pendingTypeClosers = savedPending;
             return false;
         }
+        finally { EndSpeculation(previousRewind); }
         arrow = ParseArrowBody(parameters, names, returnType, start.Start, isAsync) with { TypeParameters = typeParameters };
         return true;
     }
@@ -182,6 +184,8 @@ public sealed partial class Parser
     {
         var saved = _index;
         var savedPendingClosers = _pendingTypeClosers;
+        // Argument parsing can fail and trigger the comparison fallback, so pin the whole call.
+        var previousRewind = BeginSpeculation();
         try
         {
             Need(TokenKind.Less);
@@ -209,6 +213,7 @@ public sealed partial class Parser
             call = target;
             return false;
         }
+        finally { EndSpeculation(previousRewind); }
     }
 
     private List<TypeParameter> ParseTypeParameters()

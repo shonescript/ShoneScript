@@ -14,9 +14,12 @@ public sealed class HtmlBrowserTests
     };
 
     [Theory]
-    [InlineData(HtmlBrowserScriptMode.Auto)]
-    [InlineData(HtmlBrowserScriptMode.Disabled)]
-    public async Task PublicModesRefuseLoopbackBeforeSendingRequests(HtmlBrowserScriptMode mode)
+    [InlineData(HtmlBrowserScriptMode.Auto, false)]
+    [InlineData(HtmlBrowserScriptMode.Disabled, false)]
+    [InlineData(HtmlBrowserScriptMode.Disabled, true)]
+    [InlineData(HtmlBrowserScriptMode.Isolated, false)]
+    [InlineData(HtmlBrowserScriptMode.Isolated, true)]
+    public async Task PublicModesRefuseLoopbackBeforeSendingRequests(HtmlBrowserScriptMode mode, bool legacyTrustedOptIn)
     {
         var requests = 0;
         await using var server = new BrowserHttpFixture(_ =>
@@ -24,7 +27,7 @@ public sealed class HtmlBrowserTests
             Interlocked.Increment(ref requests);
             return Response.Text("<script>document.title='unexpected';</script>");
         });
-        using var browser = new HtmlBrowser(new HtmlBrowserOptions { ScriptMode = mode, EnableTrustedScripts = false });
+        using var browser = new HtmlBrowser(new HtmlBrowserOptions { ScriptMode = mode, EnableTrustedScripts = legacyTrustedOptIn });
         await browser.NavigateAsync(server.Root);
         Assert.Null(browser.Page);
         Assert.False(browser.IsLoading);

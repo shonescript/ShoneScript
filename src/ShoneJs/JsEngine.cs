@@ -9,23 +9,53 @@ namespace ShoneJs;
 /// <summary>Configures features and execution limits for an engine.</summary>
 public sealed class JsEngineOptions
 {
+    private int _maximumLoopIterations = 1_000_000;
+    private int _maximumSteps = 10_000_000;
+    private int _maximumPendingJobs = 100_000;
+    private CancellationToken _cancellationToken;
+
+    // A shared options instance can be used by multiple engines. Each tracks the revision it applied.
+    internal long ExecutionRevision { get; private set; }
+
     /// <summary>Sets the iteration budget used by script execution and Promise job draining.</summary>
-    public int MaximumLoopIterations { get; set; } = 1_000_000;
+    public int MaximumLoopIterations
+    {
+        get => _maximumLoopIterations;
+        set { _maximumLoopIterations = value; ExecutionRevision++; }
+    }
 
     /// <summary>Maximum interpreter steps per host execution or job checkpoint.</summary>
-    public int MaximumExecutionSteps { get; set; } = 10_000_000;
+    public int MaximumSteps
+    {
+        get => _maximumSteps;
+        set { _maximumSteps = value; ExecutionRevision++; }
+    }
+
+    /// <summary>Alias for <see cref="MaximumSteps"/>.</summary>
+    public int MaximumExecutionSteps { get => MaximumSteps; set => MaximumSteps = value; }
 
     /// <summary>Maximum queued microtasks and reactions on one pending Promise.</summary>
-    public int MaximumPendingJobs { get; set; } = 100_000;
+    public int MaximumPendingJobs
+    {
+        get => _maximumPendingJobs;
+        set { _maximumPendingJobs = value; ExecutionRevision++; }
+    }
 
     /// <summary>Maximum source length in UTF-16 code units.</summary>
     public int MaximumSourceLength { get; set; } = 4_000_000;
 
     /// <summary>Lifetime cancellation for parsing, execution and Promise jobs.</summary>
-    public CancellationToken CancellationToken { get; set; }
+    public CancellationToken CancellationToken
+    {
+        get => _cancellationToken;
+        set { _cancellationToken = value; ExecutionRevision++; }
+    }
 
     /// <summary>Installs the BigFloat global when the engine is created.</summary>
     public bool EnableBigFloat { get; set; }
+
+    /// <summary>Gives the engine its own Symbol.for registry at construction. By default engines share the process registry.</summary>
+    public bool IsolateSymbolRegistry { get; set; }
 }
 
 /// <summary>A parsed JavaScript script that can be passed to <see cref="JsEngine.Execute"/>.</summary>
@@ -67,17 +97,19 @@ public sealed class CheckedTypeScript
 }
 
 /// <summary>Parses and interprets JavaScript and supported TypeScript scripts.</summary>
-/// <remarks>Executions on an instance share globals and pending Promise jobs. Use a separate instance for independent sessions.</remarks>
+/// <remarks>Executions on an instance share globals and pending Promise jobs. Use the engine from a single owner thread, and use a separate instance for each independent session.</remarks>
 public sealed class JsEngine
 {
     private readonly Interpreter _interpreter;
+    private long _appliedExecutionRevision = -1;
+
     /// <summary>Gets the engine configuration.</summary>
     public JsEngineOptions Options { get; }
     /// <summary>Creates an engine with a fresh global environment.</summary>
     public JsEngine(JsEngineOptions? options = null)
     {
         Options = options ?? new JsEngineOptions();
-        _interpreter = new Interpreter(Options.EnableBigFloat);
+        _interpreter = new Interpreter(Options.EnableBigFloat, Options.IsolateSymbolRegistry);
     }
 
     /// <summary>Parses JavaScript without executing it.</summary>
@@ -92,7 +124,7 @@ public sealed class JsEngine
     {
         using var linked = LinkParsingCancellation(source, cancellationToken);
         var token = linked?.Token ?? (cancellationToken.CanBeCanceled ? cancellationToken : Options.CancellationToken);
-        var parser = new Parser(new Lexer(source, token), forceStrict: forceStrict, cancellationToken: token);
+        var parser = new Parser(Lexer.CreateForParser(source, token), forceStrict: forceStrict, cancellationToken: token);
         var statements = parser.Parse();
         return new JsParsedScript(statements, parser.IsStrict);
     }
@@ -104,7 +136,7 @@ public sealed class JsEngine
     {
         ArgumentNullException.ThrowIfNull(script);
         ConfigureExecution();
-        return _interpreter.RunGuarded(() => _interpreter.Execute(script.Statements, script.IsStrict), cancellationToken);
+        return _interpreter.Execute(script.Statements, script.IsStrict, cancellationToken);
     }
 
     /// <summary>Parses and executes JavaScript in the current global environment.</summary>
@@ -118,7 +150,7 @@ public sealed class JsEngine
     {
         using var linked = LinkParsingCancellation(source, cancellationToken);
         var token = linked?.Token ?? (cancellationToken.CanBeCanceled ? cancellationToken : Options.CancellationToken);
-        return new Parser(new Lexer(source, token), ParseGoal.Module, cancellationToken: token).ParseModule();
+        return new Parser(Lexer.CreateForParser(source, token), ParseGoal.Module, cancellationToken: token).ParseModule();
     }
 
     /// <summary>Registers a module on the engine owner thread before evaluating its graph.</summary>
@@ -145,13 +177,17 @@ public sealed class JsEngine
 
     private void ConfigureExecution()
     {
+        var revision = Options.ExecutionRevision;
+        if (_appliedExecutionRevision == revision) return;
+
         ArgumentOutOfRangeException.ThrowIfNegative(Options.MaximumLoopIterations);
         ArgumentOutOfRangeException.ThrowIfNegative(Options.MaximumExecutionSteps);
         ArgumentOutOfRangeException.ThrowIfNegative(Options.MaximumPendingJobs);
         _interpreter.MaximumLoopIterations = Options.MaximumLoopIterations;
-        _interpreter.MaximumExecutionSteps = Options.MaximumExecutionSteps;
+        _interpreter.MaximumExecutionSteps = Options.MaximumSteps;
         _interpreter.MaximumPendingJobs = Options.MaximumPendingJobs;
         _interpreter.CancellationToken = Options.CancellationToken;
+        _appliedExecutionRevision = revision;
     }
 
     /// <summary>Parses supported TypeScript syntax without executing it.</summary>
@@ -160,7 +196,7 @@ public sealed class JsEngine
     {
         using var linked = LinkParsingCancellation(source, default);
         var token = Options.CancellationToken;
-        var parser = new Parser(new Lexer(source, token), typeScript: true, cancellationToken: token);
+        var parser = new Parser(Lexer.CreateForParser(source, token), typeScript: true, cancellationToken: token);
         var statements = parser.ParseTypeScript();
         return new CheckedTypeScript(new JsParsedScript(statements, parser.IsStrict));
     }
@@ -181,7 +217,7 @@ public sealed class JsEngine
     public void DrainJobs(CancellationToken cancellationToken)
     {
         ConfigureExecution();
-        _interpreter.RunGuarded(() => { _interpreter.DrainJobs(); return JsValue.Undefined; }, cancellationToken);
+        _interpreter.DrainJobs(cancellationToken);
     }
 
     /// <summary>Creates a native Promise; settle it only on this engine's owner thread.</summary>

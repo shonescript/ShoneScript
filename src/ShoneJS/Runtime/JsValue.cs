@@ -1,7 +1,6 @@
 // Copyright (c) 2026 Shone
 // SPDX-License-Identifier: MIT
 
-using System.Globalization;
 using Sdcb.Arithmetic;
 
 namespace ShoneJs.Runtime;
@@ -29,6 +28,8 @@ public readonly struct JsValue
         JsType.Boolean => _number != 0,
         _ => _reference
     };
+
+    internal JsObject? ObjectValue => _reference as JsObject;
 
     private JsValue(JsType type, object? reference = null, double number = 0)
     {

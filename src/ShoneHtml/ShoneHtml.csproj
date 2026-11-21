@@ -12,5 +12,6 @@
     <InternalsVisibleTo Include="ShoneHtml.Tests" />
     <InternalsVisibleTo Include="ShoneHtml.Worker" />
     <InternalsVisibleTo Include="ShoneDemo" />
+    <InternalsVisibleTo Include="ShoneScript.Benchmarks" />
   </ItemGroup>
 </Project>

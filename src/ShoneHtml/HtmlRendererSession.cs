@@ -1,4 +1,3 @@
-using System.Threading.Channels;
 using System.Text.Json;
 
 namespace ShoneHtml;
@@ -8,7 +7,8 @@ internal sealed class HtmlRendererSession : IDisposable
     // Release gate: only enable for a deployment that passed the Windows isolation and publish checks.
     internal static bool IsReleased => false;
     internal static string WorkerExecutable => Path.Combine(AppContext.BaseDirectory, "ShoneHtml.Worker", "ShoneHtml.Worker.exe");
-    private readonly Channel<HtmlRendererInput> _inputs = Channel.CreateBounded<HtmlRendererInput>(64);
+    private static readonly TimeSpan IdlePollInterval = TimeSpan.FromMilliseconds(100);
+    private readonly HtmlRendererInputQueue _inputs = new();
     private readonly CancellationTokenSource _stop;
     private readonly CancellationToken _token;
     private readonly HtmlWindowsSandboxProcess _process;
@@ -65,7 +65,8 @@ internal sealed class HtmlRendererSession : IDisposable
 
     internal void Send(HtmlRendererInput input)
     {
-        if (input.Text?.Length > 32768 || !_inputs.Writer.TryWrite(input)) Dispose();
+        // Continuing after losing an ordered DOM event could apply later actions to stale state.
+        if (!_inputs.TryEnqueue(input)) Dispose();
     }
 
     internal async Task RunAsync(Func<HtmlRendererResult, Task> apply, Func<Task> failed)
@@ -74,12 +75,9 @@ internal sealed class HtmlRendererSession : IDisposable
         {
             while (!_token.IsCancellationRequested)
             {
-                HtmlRendererInput? input = null;
-                if (!_inputs.Reader.TryRead(out input))
-                {
-                    await Task.Delay(100, _token).ConfigureAwait(false);
-                    _inputs.Reader.TryRead(out input);
-                }
+                // Worker timers run independently. Poll when idle to retrieve their results and service resource requests.
+                var input = await _inputs.ReadAsync(IdlePollInterval, _token).ConfigureAwait(false);
+                _token.ThrowIfCancellationRequested();
                 using var deadline = CancellationTokenSource.CreateLinkedTokenSource(_token);
                 deadline.CancelAfter(TimeSpan.FromSeconds(10));
                 HtmlRendererResult result;
@@ -213,7 +211,7 @@ internal sealed class HtmlRendererSession : IDisposable
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
-        _inputs.Writer.TryComplete();
+        _inputs.Complete();
         _stop.Cancel();
         _process.Dispose();
         _stop.Dispose();

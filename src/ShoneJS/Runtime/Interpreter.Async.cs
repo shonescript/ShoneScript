@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Shone
 // SPDX-License-Identifier: MIT
 
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Text;
@@ -16,12 +17,19 @@ internal sealed class JsOperation<T> : ICriticalNotifyCompletion
     private T _result = default!;
     private ExceptionDispatchInfo? _error;
     private Action? _continuation;
+#if DEBUG
+    private bool _hasContinuation;
+#endif
     public bool IsCompleted { get; private set; }
     public JsOperation<T> GetAwaiter() => this;
     public T GetResult() { _error?.Throw(); return _result; }
     public void OnCompleted(Action continuation) => UnsafeOnCompleted(continuation);
     public void UnsafeOnCompleted(Action continuation)
     {
+#if DEBUG
+        Debug.Assert(!_hasContinuation, "A JsOperation supports only one continuation.");
+        _hasContinuation = true;
+#endif
         if (IsCompleted) continuation();
         else _continuation = continuation;
     }
@@ -104,23 +112,22 @@ public sealed partial class Interpreter
         BindParameters(parameters, args);
         if (expression is not null) return await EvalAsync(expression);
         PrepareScope(body!.Body, _env, functionScope: true, parameterScope: _varEnv);
-        try { await ExecListAsync(body.Body); }
-        catch (ReturnSignal returned) { return returned.Value; }
-        return JsValue.Undefined;
+        return FunctionCompletionValue(await ExecListAsync(body.Body));
     }
 
-    private async JsOperation<JsValue> ExecListAsync(IEnumerable<Stmt> statements)
+    private async JsOperation<Completion> ExecListAsync(IEnumerable<Stmt> statements)
     {
-        var result = JsValue.Undefined;
+        var result = Completion.Normal(JsValue.Undefined);
         foreach (var statement in statements)
         {
-            var value = await ExecAsync(statement);
-            if (statement is not (VarStmt or VarListStmt or FunctionStmt or TypeAliasStmt or InterfaceStmt or EnumStmt)) result = value;
+            var completion = await ExecAsync(statement);
+            if (completion.IsAbrupt) return completion;
+            if (ProducesListValue(statement)) result = completion;
         }
         return result;
     }
 
-    private async JsOperation<JsValue> ExecAsync(Stmt statement)
+    private async JsOperation<Completion> ExecAsync(Stmt statement)
     {
         ConsumeStep();
         switch (statement)
@@ -133,21 +140,14 @@ public sealed partial class Interpreter
                 finally { _env = previous; }
             }
             case VarStmt variable:
-            {
-                if (variable.Kind == TokenKind.Var)
-                {
-                    if (variable.Init is not null) WriteBinding(_varEnv, variable.Name, await EvalAsync(variable.Init));
-                }
-                else _env.Initialize(variable.Name, variable.Init is null ? JsValue.Undefined : await EvalAsync(variable.Init));
-                return JsValue.Undefined;
-            }
+                return InitializeVariable(variable, variable.Init is null ? JsValue.Undefined : await EvalAsync(variable.Init));
             case VarListStmt list: return await ExecListAsync(list.Declarations);
-            case ExprStmt expression: return await EvalAsync(expression.Expression);
+            case ExprStmt expression: return Completion.Normal(await EvalAsync(expression.Expression));
             case IfStmt branch:
                 return (await EvalAsync(branch.Test)).ToBoolean() ? await ExecAsync(branch.Then)
-                    : branch.Else is null ? JsValue.Undefined : await ExecAsync(branch.Else);
+                    : branch.Else is null ? Completion.Normal(JsValue.Undefined) : await ExecAsync(branch.Else);
             case ReturnStmt returned:
-                throw new ReturnSignal(returned.Value is null ? JsValue.Undefined : await EvalAsync(returned.Value));
+                return Completion.Return(returned.Value is null ? JsValue.Undefined : await EvalAsync(returned.Value));
             case ThrowStmt thrown: throw new JsException(await EvalAsync(thrown.Value));
             case WhileStmt loop: return await LoopAsync(loop.Test, loop.Body, false);
             case DoWhileStmt loop: return await LoopAsync(loop.Test, loop.Body, true);
@@ -158,49 +158,41 @@ public sealed partial class Interpreter
         }
     }
 
-    private async JsOperation<JsValue> LoopAsync(Expr test, Stmt body, bool runFirst)
+    private async JsOperation<Completion> LoopAsync(Expr test, Stmt body, bool runFirst)
     {
-        var result = JsValue.Undefined;
+        var result = Completion.Normal(JsValue.Undefined);
         while (runFirst || (await EvalAsync(test)).ToBoolean())
         {
             runFirst = false;
             ConsumeIteration();
-            try { result = await ExecAsync(body); }
-            catch (ContinueSignal) { }
-            catch (BreakSignal) { break; }
+            var completion = await ExecAsync(body);
+            if (completion.Kind == CompletionKind.Break) break;
+            if (completion.Kind == CompletionKind.Return) return completion;
+            if (!completion.IsAbrupt) result = completion;
         }
         return result;
     }
 
-    private async JsOperation<JsValue> ForAsync(ForStmt loop)
+    private async JsOperation<Completion> ForAsync(ForStmt loop)
     {
         var previous = _env;
         try
         {
-            var lexical = loop.Init is null ? [] : ImmediateVariables([loop.Init]).Where(variable => variable.Kind != TokenKind.Var).ToArray();
-            if (lexical.Length > 0)
+            var lexical = PrepareForScope(loop, previous);
+            if (loop.Init is not null)
             {
-                _env = new EnvironmentRecord(previous);
-                foreach (var variable in lexical) _env.Create(variable.Name, variable.Kind == TokenKind.Let, lexical: true);
+                var initial = await ExecAsync(loop.Init);
+                if (initial.IsAbrupt) return initial;
             }
-            if (loop.Init is not null) await ExecAsync(loop.Init);
-            var result = JsValue.Undefined;
+            var result = Completion.Normal(JsValue.Undefined);
             while (loop.Test is null || (await EvalAsync(loop.Test)).ToBoolean())
             {
                 ConsumeIteration();
-                try { result = await ExecAsync(loop.Body); }
-                catch (ContinueSignal) { }
-                catch (BreakSignal) { break; }
-                if (lexical.Length > 0)
-                {
-                    var current = _env;
-                    _env = new EnvironmentRecord(previous);
-                    foreach (var variable in lexical)
-                    {
-                        _env.Create(variable.Name, variable.Kind == TokenKind.Let, lexical: true);
-                        _env.Initialize(variable.Name, current.Get(variable.Name));
-                    }
-                }
+                var completion = await ExecAsync(loop.Body);
+                if (completion.Kind == CompletionKind.Break) break;
+                if (completion.Kind == CompletionKind.Return) return completion;
+                if (!completion.IsAbrupt) result = completion;
+                AdvanceForScope(lexical, previous);
                 if (loop.Update is not null) await EvalAsync(loop.Update);
             }
             return result;
@@ -208,7 +200,7 @@ public sealed partial class Interpreter
         finally { _env = previous; }
     }
 
-    private async JsOperation<JsValue> SwitchAsync(SwitchStmt selection)
+    private async JsOperation<Completion> SwitchAsync(SwitchStmt selection)
     {
         var value = await EvalAsync(selection.Discriminant);
         var previous = _env;
@@ -225,46 +217,45 @@ public sealed partial class Interpreter
                 else if (AbstractOperations.StrictEqual(await EvalAsync(test), value)) { match = i; break; }
             }
             if (match < 0) match = fallback;
-            var result = JsValue.Undefined;
+            var result = Completion.Normal(JsValue.Undefined);
             if (match < 0) return result;
-            try
+            for (var i = match; i < selection.Cases.Count; i++)
             {
-                for (var i = match; i < selection.Cases.Count; i++) result = await ExecListAsync(selection.Cases[i].Body);
+                var completion = await ExecListAsync(selection.Cases[i].Body);
+                if (completion.Kind == CompletionKind.Break) break;
+                if (completion.IsAbrupt) return completion;
+                result = completion;
             }
-            catch (BreakSignal) { }
             return result;
         }
         finally { _env = previous; }
     }
 
-    private async JsOperation<JsValue> TryAsync(TryStmt attempt)
+    private async JsOperation<Completion> TryAsync(TryStmt attempt)
     {
-        var abruptHostExit = false;
+        var result = default(Completion);
+        ExceptionDispatchInfo? pendingThrow = null;
         try
         {
-            try { return await ExecAsync(attempt.Body); }
+            try { result = await ExecAsync(attempt.Body); }
             catch (JsException error) when (attempt.CatchBody is not null)
             {
-                AttachErrorPrototype(error);
                 var previous = _env;
-                _env = new EnvironmentRecord(previous);
                 try
                 {
-                    if (attempt.CatchName is not null) _env.Declare(attempt.CatchName, error.Value);
-                    return await ExecAsync(attempt.CatchBody);
+                    EnterCatchScope(attempt, error);
+                    result = await ExecAsync(attempt.CatchBody);
                 }
                 finally { _env = previous; }
             }
         }
-        catch (Exception error) when (error is not (JsException or ReturnSignal or BreakSignal or ContinueSignal))
+        catch (JsException error) when (attempt.FinallyBody is not null)
         {
-            abruptHostExit = true;
-            throw;
+            pendingThrow = ExceptionDispatchInfo.Capture(error);
         }
-        finally
-        {
-            if (!abruptHostExit && attempt.FinallyBody is not null) await ExecAsync(attempt.FinallyBody);
-        }
+
+        return attempt.FinallyBody is null ? result
+            : FinishTry(result, pendingThrow, await ExecAsync(attempt.FinallyBody));
     }
 
     private async JsOperation<JsValue> EvalAsync(Expr expression)
