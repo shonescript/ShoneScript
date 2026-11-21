@@ -92,18 +92,22 @@ internal sealed partial class HtmlScriptHost
             {
                 var request = CreateRequest(Arg(args, 0), Arg(args, 1));
                 if (request.Signal.Canceled) { reject(request.Signal.Reason); return promise; }
-                if (_page.Browser is not { } browser || _page.Address is not { } origin) throw TypeError("Fetch requires a browser document with an HTTP(S) origin");
+                var renderer = Renderer;
+                var browser = _page.Browser;
+                var origin = renderer?.Origin ?? _page.Address;
+                if ((renderer is null && browser is null) || origin is null) throw TypeError("Fetch requires a browser document with an HTTP(S) origin");
                 var cross = !HtmlResources.SameOrigin(origin, request.Address);
                 var headers = new Dictionary<string, string>(request.Headers.Fields, StringComparer.OrdinalIgnoreCase);
                 if (cross && (request.Mode == "same-origin" || !IsSimpleRequest(request.Method, headers))) throw TypeError("This cross-origin request would require unsupported CORS preflight");
-                if (cross) headers["origin"] = UrlPart(origin, "origin");
+                if (renderer is null && cross) headers["origin"] = UrlPart(origin, "origin");
+                if (renderer is not null) ValidateRendererFetch(request, headers);
                 if (Interlocked.Increment(ref _fetches) > 64)
                 {
                     Interlocked.Decrement(ref _fetches);
-                    throw TypeError("Page fetch limit exceeded");
+                    throw BudgetError("Page fetch limit exceeded");
                 }
                 if (Arg(args, 0).Data is RequestObject original && request.Text is not null) original.Used = true;
-                _ = FetchAsync(browser, origin, request, headers, cross, resolve, reject);
+                _ = FetchAsync(browser, renderer, origin, request, headers, cross, resolve, reject);
             }
             catch (JsException error) { reject(error.Value); }
             return promise;
@@ -137,18 +141,30 @@ internal sealed partial class HtmlScriptHost
         return promise;
     }
 
-    private async Task FetchAsync(HtmlBrowser browser, Uri origin, RequestObject request, Dictionary<string, string> headers,
-        bool cross, Action<JsValue> resolve, Action<JsValue> reject)
+    private static void ValidateRendererFetch(RequestObject request, Dictionary<string, string> headers)
+    {
+        if (request.Address.AbsoluteUri.Length > 8192 || request.Method is not ("GET" or "HEAD" or "POST" or "PUT" or "DELETE" or "PATCH" or "OPTIONS") ||
+            request.Text is { } text && (text.Length > 256 * 1024 || Encoding.UTF8.GetByteCount(text) > 256 * 1024) || headers.Count > 32)
+            throw TypeError("Fetch exceeds the public request limits");
+    }
+
+    private async Task FetchAsync(HtmlBrowser? browser, HtmlRendererDocument? renderer, Uri origin, RequestObject request,
+        Dictionary<string, string> headers, bool cross, Action<JsValue> resolve, Action<JsValue> reject)
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(_page.Lifetime, request.Signal.Token);
         try
         {
-            var response = await browser.Resources.LoadAsync(request.Address, linked.Token, new HttpMethod(request.Method),
-                request.Text is null ? null : Encoding.UTF8.GetBytes(request.Text), headers: headers,
-                allowRedirect: (_, next) => !cross && request.Redirect == "follow" && HtmlResources.SameOrigin(origin, next)).ConfigureAwait(false);
+            var body = request.Text is null ? null : Encoding.UTF8.GetBytes(request.Text);
+            var response = renderer is not null
+                ? await renderer.LoadAsync(new(HtmlPublicRequestKind.Fetch, request.Address.AbsoluteUri, request.Method, body, headers,
+                    request.Mode, request.Redirect), linked.Token).ConfigureAwait(false)
+                : await browser!.Resources.LoadAsync(request.Address, linked.Token, new HttpMethod(request.Method), body, headers: headers,
+                    allowRedirect: (_, next) => !cross && request.Redirect == "follow" && HtmlResources.SameOrigin(origin, next)).ConfigureAwait(false);
+            if (renderer is not null && (!HtmlResources.SameOrigin(request.Address, response.Address) ||
+                response.Redirected && (cross || request.Redirect == "error"))) throw new HttpRequestException("Redirect blocked by fetch policy");
             bool opaque = cross && request.Mode == "no-cors";
             var permitted = !cross || opaque || response.Headers.TryGetValue("Access-Control-Allow-Origin", out var allow) &&
-                (allow == "*" || allow == UrlPart(origin, "origin"));
+                (allow == "*" || allow == (renderer is null ? UrlPart(origin, "origin") : origin.GetLeftPart(UriPartial.Authority)));
             if (!permitted) throw new HttpRequestException("Response is not exposed by CORS policy");
             var exposed = cross && response.Headers.TryGetValue("Access-Control-Expose-Headers", out var names)
                 ? names.Split(',').Select(n => n.Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase) : null;
@@ -173,7 +189,7 @@ internal sealed partial class HtmlScriptHost
 
         void Post(Action settle)
         {
-            if (!_tasks.Post("fetch", () =>
+            if (!PostTask("fetch", () =>
             {
                 Interlocked.Decrement(ref _fetches);
                 if (request.Signal.Canceled) reject(request.Signal.Reason); else settle();
@@ -193,7 +209,7 @@ internal sealed partial class HtmlScriptHost
         var method = ReadText("method", existing?.Method ?? "GET");
         var upper = method.ToUpperInvariant();
         if (!IsToken(method) || upper is "CONNECT" or "TRACE" or "TRACK") throw TypeError("Invalid or forbidden HTTP method");
-        if (upper is "DELETE" or "GET" or "HEAD" or "OPTIONS" or "POST" or "PUT") method = upper;
+        if (upper is "DELETE" or "GET" or "HEAD" or "OPTIONS" or "POST" or "PUT" || Renderer is not null && upper == "PATCH") method = upper;
         var mode = ReadText("mode", existing?.Mode ?? "cors");
         var redirect = ReadText("redirect", existing?.Redirect ?? "follow");
         if (mode is not ("cors" or "same-origin" or "no-cors") || redirect is not ("follow" or "error")) throw TypeError("Unsupported fetch mode or redirect policy");

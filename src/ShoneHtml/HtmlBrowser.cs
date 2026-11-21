@@ -7,10 +7,13 @@ namespace ShoneHtml;
 /// <summary>Screen dimensions in CSS pixels and the current window's device scale.</summary>
 public readonly record struct HtmlDisplayMetrics(int Width, int Height, double DevicePixelRatio);
 
+public enum HtmlBrowserScriptMode { Auto, Disabled, TrustedInProcess }
+
 public sealed class HtmlBrowserOptions
 {
     /// <summary>Runs scripts in the browser process for explicitly trusted applications only.</summary>
     public bool EnableTrustedScripts { get; init; }
+    public HtmlBrowserScriptMode ScriptMode { get; init; }
     public int MaximumResponseBytes { get; init; } = 4 * 1024 * 1024;
     public int MaximumPageResourceBytes { get; init; } = 16 * 1024 * 1024;
     public int MaximumPageResources { get; init; } = 48;
@@ -31,6 +34,9 @@ public sealed class HtmlBrowser : IDisposable
     private sealed record Entry(Navigation Request, Uri Address, long DocumentId, double Scroll, object? State = null);
     private readonly List<Entry> _history = [];
     private readonly BrowserContext? _ownedContext;
+    private readonly HtmlPublicNetwork? _publicNetwork;
+    private long _rendererGeneration;
+    private int _rendererNavigations;
     private CancellationTokenSource? _navigation;
     private int _index = -1;
     private long _documentId;
@@ -40,6 +46,7 @@ public sealed class HtmlBrowser : IDisposable
     public HtmlBrowser(HtmlBrowserOptions? options = null, SynchronizationContext? context = null)
     {
         Options = options ?? new HtmlBrowserOptions();
+        if (!Enum.IsDefined(Options.ScriptMode)) throw new ArgumentOutOfRangeException(nameof(options));
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(Options.MaximumResponseBytes);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(Options.MaximumPageResourceBytes);
         ArgumentOutOfRangeException.ThrowIfNegative(Options.MaximumPageResources);
@@ -53,6 +60,7 @@ public sealed class HtmlBrowser : IDisposable
         ArgumentOutOfRangeException.ThrowIfNegative(Options.ScriptOptions.MaximumLoopIterations);
         Context = context ?? (_ownedContext = new BrowserContext());
         Resources = new HtmlResources(Options);
+        if (!UsesTrustedTransport) _publicNetwork = new HtmlPublicNetwork(Options);
     }
 
     public HtmlPage? Page { get; private set; }
@@ -155,9 +163,10 @@ public sealed class HtmlBrowser : IDisposable
     }
 
     private async Task NavigateCoreAsync(Navigation request, int existingIndex = -1, bool allowFragment = true,
-        bool replace = false)
+        bool replace = false, bool rendererInitiated = false)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        if (!rendererInitiated) _rendererNavigations = 0;
         if (!HtmlResources.IsHttpAddress(request.Address))
         {
             await RejectAddress();
@@ -191,11 +200,37 @@ public sealed class HtmlBrowser : IDisposable
         Status = $"Loading {request.Address.Host}…";
         Changed?.Invoke();
         HtmlPage? pending = null;
+        HtmlRendererSession? renderer = null;
+        HtmlRendererResult? initial = null;
         try
         {
-            var resource = await Resources.LoadAsync(request.Address, operation.Token, request.Method, request.Body,
-                request.Body is null ? null : "application/x-www-form-urlencoded", encodedFormQuery: request.EncodedQuery);
-            pending = await HtmlPage.LoadDocumentAsync(this, resource, operation.Token);
+            var scope = _publicNetwork?.CreateScope();
+            var contentType = request.Body is null ? null : "application/x-www-form-urlencoded";
+            var resource = scope is null
+                ? await Resources.LoadAsync(request.Address, operation.Token, request.Method, request.Body, contentType, encodedFormQuery: request.EncodedQuery)
+                : await scope.LoadAsync(request.Address, operation.Token, HtmlPublicRequestKind.Navigation, request.Method, request.Body, contentType,
+                    encodedFormQuery: request.EncodedQuery);
+            if (scope is not null && resource.IsSuccess && WantsRenderer && HtmlRendererSession.IsReleased)
+            {
+                pending = HtmlPage.CreateRendererMirror(this, resource.Address);
+                try
+                {
+                    (renderer, initial) = await HtmlRendererSession.OpenAsync(scope, resource, ++_rendererGeneration,
+                        Options, operation.Token, pending.Lifetime);
+                    pending.ApplyRendererSnapshot(initial.Snapshot!, initial.FocusedId);
+                    pending.AttachRenderer(renderer);
+                }
+                catch (Exception ex) when (HtmlRendererSession.IsRendererFailure(ex))
+                {
+                    renderer?.Dispose();
+                    renderer = null;
+                    initial = null;
+                    pending.Dispose();
+                    pending = null;
+                    operation.Token.ThrowIfCancellationRequested();
+                }
+            }
+            pending ??= await HtmlPage.LoadDocumentAsync(this, resource, operation.Token, scope);
             operation.Token.ThrowIfCancellationRequested();
 
             var previous = Page;
@@ -223,11 +258,21 @@ public sealed class HtmlBrowser : IDisposable
             Status = resource.IsSuccess ? DocumentStatus(Page) : $"HTTP {(int)resource.Status} {resource.Status}";
             Changed?.Invoke();
 
+            var active = Page;
             if (resource.IsSuccess && RunsScripts)
-                await Page.LoadScriptsAsync(Options.ScriptOptions);
+                await active.LoadScriptsAsync(Options.ScriptOptions);
             operation.Token.ThrowIfCancellationRequested();
             IsLoading = false;
             Changed?.Invoke();
+            if (renderer is not null && initial is not null)
+            {
+                var session = renderer;
+                renderer = null; // The page now owns the session.
+                var followup = ApplyRendererResult(active, initial with { Snapshot = null });
+                _ = session.RunAsync(result => RunAsync(() => ApplyRendererResult(active, result)),
+                    () => RunAsync(() => RendererStopped(active)));
+                await followup;
+            }
         }
         catch (OperationCanceledException) when (operation.IsCancellationRequested)
         {
@@ -244,20 +289,62 @@ public sealed class HtmlBrowser : IDisposable
         }
         finally
         {
+            renderer?.Dispose();
             pending?.Dispose();
             if (ReferenceEquals(_navigation, operation))
                 _navigation = null;
         }
     }
 
-    private bool RunsScripts => Options.EnableTrustedScripts && Options.ScriptOptions.EnableScripts;
+    private bool UsesTrustedTransport => Options.ScriptMode == HtmlBrowserScriptMode.TrustedInProcess ||
+        Options.ScriptMode == HtmlBrowserScriptMode.Auto && Options.EnableTrustedScripts;
+    private bool RunsScripts => UsesTrustedTransport && Options.ScriptOptions.EnableScripts;
+    private bool WantsRenderer => Options.ScriptMode == HtmlBrowserScriptMode.Auto && Options.ScriptOptions.EnableScripts;
+
+    private Task ApplyRendererResult(HtmlPage page, HtmlRendererResult result)
+    {
+        if (!ReferenceEquals(Page, page) || page.Lifetime.IsCancellationRequested) return Task.CompletedTask;
+        if (result.Snapshot is { } snapshot) page.ApplyRendererSnapshot(snapshot, result.FocusedId);
+        if (result.Error is not null)
+        {
+            Status = "A page script reported an error.";
+            Changed?.Invoke();
+        }
+        if (!ReferenceEquals(Page, page) || page.Lifetime.IsCancellationRequested || result.Navigation is not { } navigation)
+            return Task.CompletedTask;
+        // Do not keep the current session pump waiting for another document to load.
+        Context.Post(_ =>
+        {
+            if (!ReferenceEquals(Page, page) || page.Lifetime.IsCancellationRequested) return;
+            if (++_rendererNavigations > 16)
+            {
+                _ = RendererStopped(page);
+                return;
+            }
+            _ = NavigateCoreAsync(new(new Uri(navigation.Address), new HttpMethod(navigation.Method), navigation.Body, navigation.Query),
+                allowFragment: navigation.Method == "GET" && navigation.Query is null, replace: navigation.Replace, rendererInitiated: true);
+        }, null);
+        return Task.CompletedTask;
+    }
+
+    private Task RendererStopped(HtmlPage page)
+    {
+        if (ReferenceEquals(Page, page) && !page.Lifetime.IsCancellationRequested)
+        {
+            page.Stop();
+            Status = "Isolated renderer stopped. The last display is no longer interactive.";
+            Changed?.Invoke();
+        }
+        return Task.CompletedTask;
+    }
 
     private string DocumentStatus(HtmlPage page)
     {
         if (RunsScripts || !page.Document.QuerySelectorAll("script").Any(HtmlScriptHost.IsExecutableScript))
             return page.ResourceStatus;
-        const string disabled = "Page scripts were not run (disabled).";
-        return page.ResourceStatus.Length == 0 ? disabled : $"{disabled} {page.ResourceStatus}";
+        var status = WantsRenderer && !UsesTrustedTransport ? "Page scripts were not run (isolated renderer unavailable)." :
+            "Page scripts were not run (disabled).";
+        return page.ResourceStatus.Length == 0 ? status : $"{status} {page.ResourceStatus}";
     }
 
     private Task RejectAddress()
@@ -328,11 +415,12 @@ public sealed class HtmlBrowser : IDisposable
             _navigation?.Cancel();
             Page?.Dispose();
             Resources.Dispose();
+            _publicNetwork?.Dispose();
         });
         _ownedContext?.Dispose();
     }
 
-    private sealed class BrowserContext : SynchronizationContext, IDisposable
+    internal sealed class BrowserContext : SynchronizationContext, IDisposable
     {
         private readonly BlockingCollection<Action> _callbacks = new();
         private readonly Thread _thread;

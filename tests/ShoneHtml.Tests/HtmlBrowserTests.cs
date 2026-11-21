@@ -7,13 +7,36 @@ namespace ShoneHtml.Tests;
 
 public sealed class HtmlBrowserTests
 {
+    // Loopback fixtures are app-owned and use the explicitly trusted transport with scripts off.
+    private static readonly HtmlBrowserOptions StaticFixture = new()
+    {
+        ScriptMode = HtmlBrowserScriptMode.TrustedInProcess, ScriptOptions = new() { EnableScripts = false }
+    };
+
+    [Theory]
+    [InlineData(HtmlBrowserScriptMode.Auto)]
+    [InlineData(HtmlBrowserScriptMode.Disabled)]
+    public async Task PublicModesRefuseLoopbackBeforeSendingRequests(HtmlBrowserScriptMode mode)
+    {
+        var requests = 0;
+        await using var server = new BrowserHttpFixture(_ =>
+        {
+            Interlocked.Increment(ref requests);
+            return Response.Text("<script>document.title='unexpected';</script>");
+        });
+        using var browser = new HtmlBrowser(new HtmlBrowserOptions { ScriptMode = mode, EnableTrustedScripts = false });
+        await browser.NavigateAsync(server.Root);
+        Assert.Null(browser.Page);
+        Assert.False(browser.IsLoading);
+        Assert.Equal(0, requests);
+    }
     private static readonly byte[] Pixel = Convert.FromBase64String(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aX1sAAAAASUVORK5CYII=");
 
     [Fact]
     public async Task RedirectEncodingBaseStylesAndRasterUseResolvedAddresses()
     {
-        using var browser = new HtmlBrowser();
+        using var browser = new HtmlBrowser(StaticFixture);
         await using var server = new BrowserHttpFixture(request => request.Target switch
         {
             "/start" => Response.Redirect("/docs/index"),
@@ -50,7 +73,7 @@ public sealed class HtmlBrowserTests
                 ? new Response("image/png", Pixel)
                 : new Response("image/svg+xml", "<svg/>"u8.ToArray());
         });
-        using var browser = new HtmlBrowser();
+        using var browser = new HtmlBrowser(StaticFixture);
         await browser.NavigateAsync(server.Address("pixel"));
         var page = Assert.IsType<HtmlPage>(browser.Page);
         var image = Assert.Single(page.Document.QuerySelectorAll("img"));
@@ -73,7 +96,7 @@ public sealed class HtmlBrowserTests
             Interlocked.Increment(ref requests);
             return Response.Text($"<img id=valid src='{source}'><img id=invalid src='data:image/png;base64,@@@@'>");
         });
-        using var browser = new HtmlBrowser();
+        using var browser = new HtmlBrowser(StaticFixture);
         await browser.NavigateAsync(server.Root);
         var page = Assert.IsType<HtmlPage>(browser.Page);
         Assert.Equal(Pixel, page.GetImage(page.Document.GetElementById("valid")!));
@@ -92,7 +115,7 @@ public sealed class HtmlBrowserTests
             Interlocked.Increment(ref requests);
             return Response.Text($"<title>{request.Target}</title><a href='#here'>Anchor</a><p id=here>Here</p>");
         });
-        using var browser = new HtmlBrowser();
+        using var browser = new HtmlBrowser(StaticFixture);
         await browser.NavigateAsync(server.Address("one"));
         var first = browser.Page!;
         browser.UpdateScroll(123.5);
@@ -137,7 +160,7 @@ public sealed class HtmlBrowserTests
                 """)
             : Response.Text("<title>submitted</title><pre>" + System.Net.WebUtility.HtmlEncode(
                 $"{request.Method} {request.Target}\n{request.Headers.GetValueOrDefault("Content-Type")}\n{request.Body}") + "</pre>"));
-        using var browser = new HtmlBrowser();
+        using var browser = new HtmlBrowser(StaticFixture);
         await browser.NavigateAsync(server.Address("form"));
         var page = browser.Page!;
         await page.ActivateAsync(page.Document.QuerySelector("label")!);
@@ -231,7 +254,7 @@ public sealed class HtmlBrowserTests
             }
             return Response.Text($"<title>{request.Target}</title>");
         });
-        using var browser = new HtmlBrowser();
+        using var browser = new HtmlBrowser(StaticFixture);
         var slow = browser.NavigateAsync(server.Address("slow"));
         await began.Task.WaitAsync(TimeSpan.FromSeconds(5));
         await browser.NavigateAsync(server.Address("fast"));
@@ -253,7 +276,7 @@ public sealed class HtmlBrowserTests
             "/redirect" => Response.Redirect("file:///test.html"),
             _ => new("text/html", "<title>Not found</title>"u8.ToArray(), "404 Not Found")
         });
-        using var browser = new HtmlBrowser(new HtmlBrowserOptions { MaximumResponseBytes = 128 });
+        using var browser = new HtmlBrowser(new HtmlBrowserOptions { MaximumResponseBytes = 128, ScriptMode = StaticFixture.ScriptMode, ScriptOptions = StaticFixture.ScriptOptions });
         await browser.NavigateAsync(server.Address("huge"));
         Assert.Null(browser.Page);
         Assert.Contains("limit", browser.Status);
@@ -277,7 +300,7 @@ public sealed class HtmlBrowserTests
             await Task.Delay(Timeout.InfiniteTimeSpan, token);
             return Response.Text("");
         });
-        using var browser = new HtmlBrowser(new HtmlBrowserOptions { MaximumDocumentDepth = 12 });
+        using var browser = new HtmlBrowser(new HtmlBrowserOptions { MaximumDocumentDepth = 12, ScriptMode = StaticFixture.ScriptMode, ScriptOptions = StaticFixture.ScriptOptions });
         await browser.NavigateAsync(server.Address("deep"));
         Assert.Null(browser.Page);
         Assert.Contains("depth", browser.Status);

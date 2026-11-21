@@ -461,14 +461,14 @@ public sealed class HtmlView : Panel
             "textarea" => new MultiLineTextBox { Wrap = true },
             _ => new TextBox()
         };
-        var field = new Field(kind, control);
+        var field = new Field(kind, control, element);
         _fields.Add(element, field);
         control.IsTabStop = false;
-        control.GotFocus += () => SetPageFocus(element);
+        control.GotFocus += () => SetPageFocus(field.Element);
         control.LostFocus += () =>
         {
-            CommitText(element, field);
-            if (!_movingFocus && ReferenceEquals(_focusedElement, element))
+            CommitText(field.Element, field);
+            if (!_movingFocus && ReferenceEquals(_focusedElement, field.Element))
                 SetPageFocus(null);
         };
         switch (control)
@@ -481,13 +481,13 @@ public sealed class HtmlView : Panel
                 radio.CheckedChanged += _ => Toggle();
                 break;
             case ComboBox select:
-                select.SelectionChanged += _ => SelectChanged(element, field, select.SelectedIndex);
+                select.SelectionChanged += _ => SelectChanged(field.Element, field, select.SelectedIndex);
                 break;
             case PasswordBox password:
-                password.PasswordChanged += () => EditText(element, field, password.Password);
+                password.PasswordChanged += () => EditText(field.Element, field, password.Password);
                 break;
             case TextBase text:
-                text.TextChanged += value => EditText(element, field, value);
+                text.TextChanged += value => EditText(field.Element, field, value);
                 break;
         }
         if (control is SingleLineTextBase)
@@ -495,9 +495,9 @@ public sealed class HtmlView : Panel
             {
                 if (e.Key == Key.Enter)
                 {
-                    CommitText(element, field);
+                    CommitText(field.Element, field);
                     e.Handled = true;
-                    if (HtmlForms.FormOwner(element) is { } form)
+                    if (HtmlForms.FormOwner(field.Element) is { } form)
                     {
                         if (HtmlForms.DefaultSubmitter(form) is { } submitter)
                             Activate(submitter);
@@ -513,7 +513,7 @@ public sealed class HtmlView : Panel
         void Toggle()
         {
             if (!field.Syncing)
-                Activate(element, field);
+                Activate(field.Element, field);
         }
     }
 
@@ -569,6 +569,12 @@ public sealed class HtmlView : Panel
     {
         if (field.Syncing || ReadValue(element) == value)
             return;
+        if (Page.IsRendererMirror)
+        {
+            field.TextChanged = true;
+            Page.SendRendererInput(element, HtmlRendererInputKind.Text, value);
+            return;
+        }
         if (element is IHtmlInputElement input)
             input.Value = value;
         else if (element is IHtmlTextAreaElement area)
@@ -584,7 +590,9 @@ public sealed class HtmlView : Panel
         if (!field.TextChanged || !Page.Document.Contains(element))
             return;
         field.TextChanged = false;
-        Page.DispatchEvent(element, "change");
+        if (Page.IsRendererMirror)
+            Page.SendRendererInput(element, HtmlRendererInputKind.Change);
+        else Page.DispatchEvent(element, "change");
     }
 
     private void SelectChanged(IElement element, Field field, int index)
@@ -595,6 +603,11 @@ public sealed class HtmlView : Panel
         var selected = Array.IndexOf(select.Options.ToArray(), field.Options[index]);
         if (selected < 0 || selected == select.SelectedIndex)
             return;
+        if (Page.IsRendererMirror)
+        {
+            Page.SendRendererInput(element, HtmlRendererInputKind.Select, index: selected);
+            return;
+        }
         foreach (var option in select.Options)
             option.IsSelected = ReferenceEquals(option, field.Options[index]);
         Page.FormControlChanged(element);
@@ -633,15 +646,16 @@ public sealed class HtmlView : Panel
 
     private PageImage? GetPageImage(IElement element)
     {
-        if (Page.GetImage(element) is not { } bytes)
-            return null;
+        var pixels = Page.GetPixels(element);
+        var bytes = pixels?.Rgba ?? Page.GetImage(element);
+        if (bytes is null) return null;
         if (_images.TryGetValue(bytes, out var cached))
             return cached;
         var entry = new PageImage();
         _images.Add(bytes, entry);
         try
         {
-            var source = ImageSource.FromBytes(bytes);
+            var source = pixels is null ? ImageSource.FromBytes(bytes) : HtmlRendererProjection.CreateImageSource(pixels);
             if (source.PixelWidth > 0 && source.PixelHeight > 0 &&
                 (long)source.PixelWidth * source.PixelHeight <= MaxDecodedImagePixels)
                 entry.Source = source;
@@ -719,6 +733,24 @@ public sealed class HtmlView : Panel
 
     private void OnPageChanged()
     {
+        if (Page.IsRendererMirror)
+        {
+            foreach (var entry in _images.Values) entry.Dispose();
+            _images.Clear();
+            _pressedElement = Rebind(_pressedElement);
+            _hoveredElement = Rebind(_hoveredElement);
+            _focusedElement = Rebind(_focusedElement);
+            foreach (var (previous, field) in _fields.ToArray())
+            {
+                var next = Rebind(previous);
+                if (next is null || next.LocalName != previous.LocalName ||
+                    (next.LocalName == "input" && InputType(next) != field.Kind)) continue;
+                _fields.Remove(previous);
+                field.Element = next;
+                _fields.Add(next, field);
+            }
+            ClearLayout();
+        }
         if (_window is { } window)
         {
             SynchronizeTitle?.Invoke(window);
@@ -744,6 +776,8 @@ public sealed class HtmlView : Panel
         }
         PageChanged?.Invoke();
         RefreshLayout();
+
+        IElement? Rebind(IElement? old) => old is null ? null : Page.FindRendererElement(Page.GetRendererId(old));
     }
 
     private void StopObservingWindow()
@@ -824,8 +858,9 @@ public sealed class HtmlView : Panel
         return null;
     }
 
-    private sealed class Field(string kind, Control control)
+    private sealed class Field(string kind, Control control, IElement element)
     {
+        internal IElement Element { get; set; } = element;
         internal string Kind { get; } = kind;
         internal Control Control { get; } = control;
         internal bool Syncing;

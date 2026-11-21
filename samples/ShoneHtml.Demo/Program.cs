@@ -1,7 +1,9 @@
+using System.Runtime.CompilerServices;
 using Aprillz.MewUI;
+using ShoneHtml;
 
-if (BrowserWorker.TryRun(args))
-    return;
+if (args is ["--verify-browser-worker"])
+    return BrowserWorker.Verify();
 
 const string html = """
     <!doctype html>
@@ -46,14 +48,27 @@ const string html = """
 
 var application = Application.Create();
 if (OperatingSystem.IsWindows())
-    application.UseWin32().UseDirect2D();
+    ConfigureWindows();
 else if (OperatingSystem.IsLinux())
-    application.UseX11().UseMewVGX11();
+    ConfigureLinux();
 else if (OperatingSystem.IsMacOS())
-    application.UseMacOS().UseMewVGMetal();
+    ConfigureMacOS();
 else
     throw new PlatformNotSupportedException("The ShoneHtml demo supports Windows, Linux X11, and macOS.");
 
-var trustedScripts = args.Contains("--trusted-scripts", StringComparer.Ordinal);
+var scriptMode = args.Contains("--no-scripts", StringComparer.Ordinal) ? HtmlBrowserScriptMode.Disabled :
+    args.Contains("--trusted-scripts", StringComparer.Ordinal) ? HtmlBrowserScriptMode.TrustedInProcess :
+    HtmlBrowserScriptMode.Auto;
 var address = args.FirstOrDefault(arg => !arg.StartsWith("--", StringComparison.Ordinal));
-application.BuildMainWindow(() => BrowserWindow.Create(address, html, trustedScripts)).Run();
+application.BuildMainWindow(() => BrowserWindow.Create(address, html, scriptMode)).Run();
+return 0;
+
+// RID-specific publishes omit the backend assemblies for other operating systems.
+[MethodImpl(MethodImplOptions.NoInlining)]
+void ConfigureWindows() => application.UseWin32().UseDirect2D();
+
+[MethodImpl(MethodImplOptions.NoInlining)]
+void ConfigureLinux() => application.UseX11().UseMewVGX11();
+
+[MethodImpl(MethodImplOptions.NoInlining)]
+void ConfigureMacOS() => application.UseMacOS().UseMewVGMetal();

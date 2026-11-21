@@ -17,6 +17,9 @@ internal sealed partial class HtmlScriptHost : IDisposable
     };
 
     private readonly HtmlPage _page;
+    private HtmlRendererDocument? Renderer => _page.RendererContext;
+    private HtmlBrowserOptions? BrowserOptions => Renderer?.Options ?? _page.Browser?.Options;
+    private string? _rendererFailure;
     private readonly Engine _engine;
     private readonly HtmlTaskQueue _tasks;
     private int _dispatchDepth;
@@ -32,7 +35,14 @@ internal sealed partial class HtmlScriptHost : IDisposable
     {
         _page = page;
         _report = options.OnScriptError;
-        _engine = new Engine(new EngineOptions { MaximumLoopIterations = options.MaximumLoopIterations, CancellationToken = page.Lifetime });
+        var engineOptions = new EngineOptions { MaximumLoopIterations = options.MaximumLoopIterations, CancellationToken = page.Lifetime };
+        if (Renderer is { } renderer)
+        {
+            engineOptions.MaximumPendingJobs = 1024;
+            engineOptions.MaximumSourceLength = Math.Min(engineOptions.MaximumSourceLength, renderer.Options.MaximumResponseBytes);
+            _createdNodes = Measure(page.Document, renderer.Options.MaximumDocumentDepth, renderer.Options.MaximumDocumentNodes, includeRoot: true);
+        }
+        _engine = new Engine(engineOptions);
         _tasks = new HtmlTaskQueue(page.Context, page.Lifetime, RunTask);
         var objectPrototype = ((JsObject)_engine.GetGlobal("Object").Data!).Get("prototype").Data as JsObject;
         _nodePrototype = new JsObject { Prototype = objectPrototype };
@@ -77,15 +87,50 @@ internal sealed partial class HtmlScriptHost : IDisposable
         DispatchHostEvent(_window, evt);
     }
 
-    internal void PumpTasks() => _tasks.Pump();
+    internal void PumpTasks()
+    {
+        ThrowIfRendererFailed();
+        _tasks.Pump();
+    }
+
+    private bool PostTask(string source, Action action)
+    {
+        if (_tasks.Post(source, action)) return true;
+        if (!_page.Lifetime.IsCancellationRequested) TerminateRenderer("Page task queue limit exceeded.");
+        return false;
+    }
+
+    private void TerminateRenderer(string reason)
+    {
+        if (Renderer is not { } renderer || Interlocked.CompareExchange(ref _rendererFailure, reason, null) is not null) return;
+        _loadCompletion?.TrySetException(new RendererBudgetException(reason));
+        renderer.Abort();
+    }
+
+    private void ThrowIfRendererFailed()
+    {
+        if (Volatile.Read(ref _rendererFailure) is { } reason) throw new RendererBudgetException(reason);
+    }
+
+    private sealed class RendererBudgetException(string reason) : IOException(reason);
 
     private void RunTask(string source, Action action)
     {
         if (_page.Lifetime.IsCancellationRequested) return;
-        _checkpointFailed = false;
-        Run(source, action);
-        DrainJobs(source);
-        _page.PublishChanges();
+        try
+        {
+            _checkpointFailed = false;
+            Run(source, action);
+            DrainJobs(source);
+            _page.PublishChanges();
+        }
+        catch (RendererBudgetException)
+        {
+            // Abort already signaled the worker loop; do not let this callback escape the owner thread.
+        }
+        catch (OperationCanceledException) when (Renderer is not null && _page.Lifetime.IsCancellationRequested)
+        {
+        }
     }
 
     public void Dispose()
@@ -102,10 +147,15 @@ internal sealed partial class HtmlScriptHost : IDisposable
             if (node is IDocument)
                 return;
             var text = value.Type is JsType.Null ? "" : value.ToJsString();
-            if (_page.Browser is not null && text.Length != 0)
+            if (BrowserOptions is not null && text.Length != 0)
             {
-                var textNode = CreateText(text);
-                if (node.NodeType is NodeType.Element or NodeType.DocumentFragment) CheckInsert(node, textNode);
+                if (Renderer is not null && node.NodeType is not (NodeType.Element or NodeType.DocumentFragment))
+                    CheckDomText(text, "Text");
+                else
+                {
+                    var textNode = CreateText(text);
+                    if (node.NodeType is NodeType.Element or NodeType.DocumentFragment) CheckInsert(node, textNode);
+                }
             }
             node.TextContent = text;
             _page.MarkDirty();
@@ -139,7 +189,14 @@ internal sealed partial class HtmlScriptHost : IDisposable
         Method(_elementPrototype, "getAttribute", 1, (receiver, args) => NullableString(Element(receiver).GetAttribute(Arg(args, 0).ToJsString())));
         Method(_elementPrototype, "setAttribute", 2, (receiver, args) =>
         {
-            Element(receiver).SetAttribute(Arg(args, 0).ToJsString(), Arg(args, 1).ToJsString());
+            var name = Arg(args, 0).ToJsString();
+            var value = Arg(args, 1).ToJsString();
+            if (Renderer is not null)
+            {
+                CheckDomText(name, "Attribute name");
+                CheckDomText(value, "Attribute value");
+            }
+            Element(receiver).SetAttribute(name, value);
             _page.MarkDirty();
             return JsValue.Undefined;
         });
@@ -164,7 +221,9 @@ internal sealed partial class HtmlScriptHost : IDisposable
     private void AttributeProperty(string property, string attribute) =>
         Accessor(_elementPrototype, property, receiver => JsValue.From(Element(receiver).GetAttribute(attribute) ?? ""), (receiver, value) =>
         {
-            Element(receiver).SetAttribute(attribute, value.ToJsString());
+            var text = value.ToJsString();
+            if (Renderer is not null) CheckDomText(text, "Attribute value");
+            Element(receiver).SetAttribute(attribute, text);
             _page.MarkDirty();
         });
 
@@ -174,7 +233,9 @@ internal sealed partial class HtmlScriptHost : IDisposable
         Accessor(_documentPrototype, "documentElement", receiver => Wrap(Document(receiver).DocumentElement));
         Accessor(_documentPrototype, "title", receiver => JsValue.From(Document(receiver).Title ?? ""), (receiver, value) =>
         {
-            Document(receiver).Title = value.ToJsString();
+            var text = value.ToJsString();
+            if (Renderer is not null) CheckDomText(text, "Title");
+            Document(receiver).Title = text;
             _page.MarkDirty();
         });
         Method(_documentPrototype, "getElementById", 1, (receiver, args) => Wrap(Document(receiver).GetElementById(Arg(args, 0).ToJsString())));
@@ -185,16 +246,20 @@ internal sealed partial class HtmlScriptHost : IDisposable
 
     private void DrainJobs(string source)
     {
+        ThrowIfRendererFailed();
         if (_checkpointFailed) return;
         var success = false;
         Run($"{source} Promise jobs", () => { _engine.DrainJobs(); success = true; });
         _checkpointFailed = !success;
+        if (Renderer is { } renderer && !_page.Lifetime.IsCancellationRequested)
+            Measure(_page.Document, renderer.Options.MaximumDocumentDepth, renderer.Options.MaximumDocumentNodes, includeRoot: true);
         if (!success && !_page.Lifetime.IsCancellationRequested && _loadCompletion is { Task.IsCompleted: false } completion)
             completion.TrySetException(new InvalidOperationException($"Promise checkpoint failed during {source}."));
     }
 
     private void Run(string source, Action action)
     {
+        ThrowIfRendererFailed();
         try
         {
             if (!_page.Lifetime.IsCancellationRequested) action();
@@ -202,11 +267,20 @@ internal sealed partial class HtmlScriptHost : IDisposable
         catch (OperationCanceledException) when (_page.Lifetime.IsCancellationRequested)
         {
         }
+        catch (InvalidOperationException error) when (Renderer is not null && IsEngineBudgetError(error))
+        {
+            throw BudgetError(error.Message);
+        }
         catch (Exception error) when (error is JsSyntaxException or InvalidOperationException)
         {
             _report?.Invoke(new HtmlScriptError(source, error));
         }
+        ThrowIfRendererFailed();
     }
+
+    private static bool IsEngineBudgetError(InvalidOperationException error) => error is not JsException && error.Message is
+        "Execution limit exceeded" or "Execution step limit exceeded" or "Execution nesting limit exceeded" or "Call depth limit exceeded" or
+        "Microtask queue limit exceeded" or "Promise reaction limit exceeded" or "Source length limit exceeded" or "Page task queue limit exceeded.";
 
     private NodeObject GetWrapper(INode node) => _wrappers.GetValue(node, CreateWrapper);
 

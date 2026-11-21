@@ -135,7 +135,7 @@ internal sealed partial class HtmlResources : IDisposable
         }
     }
 
-    private static bool IsRedirect(HttpStatusCode status) => (int)status is 301 or 302 or 303 or 307 or 308;
+    internal static bool IsRedirect(HttpStatusCode status) => (int)status is 301 or 302 or 303 or 307 or 308;
 
     private static bool IsCredentialHeader(string name) =>
         name.Equals("Authorization", StringComparison.OrdinalIgnoreCase) ||

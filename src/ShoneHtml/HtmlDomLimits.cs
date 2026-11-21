@@ -1,5 +1,6 @@
 using System.Text;
 using AngleSharp.Dom;
+using AngleSharp.Html.Dom;
 using AngleSharp.Html.Parser;
 using ShoneJs.Runtime;
 
@@ -11,53 +12,95 @@ internal sealed partial class HtmlScriptHost
 
     private T AccountNode<T>(T root, bool includeRoot = true) where T : INode
     {
-        if (_page.Browser is not { } browser) return root;
-        var (_, nodes) = Measure(root, browser.Options.MaximumDocumentDepth, browser.Options.MaximumDocumentNodes - _createdNodes, includeRoot);
-        _createdNodes += nodes;
+        if (BrowserOptions is not { } options) return root;
+        _createdNodes += Measure(root, options.MaximumDocumentDepth, options.MaximumDocumentNodes - _createdNodes, includeRoot);
         return root;
     }
 
     private void CheckInsert(INode parent, INode child, bool includeRoot = true)
     {
-        if (_page.Browser is not { } browser) return;
+        if (BrowserOptions is not { } options) return;
         var depth = 1;
         for (var ancestor = parent.Parent; ancestor is not null; ancestor = ancestor.Parent) depth++;
-        var allowance = browser.Options.MaximumDocumentDepth - depth;
-        Measure(child, allowance, browser.Options.MaximumDocumentNodes, includeRoot && child.NodeType != NodeType.DocumentFragment);
+        var allowance = options.MaximumDocumentDepth - depth;
+        Measure(child, allowance, options.MaximumDocumentNodes, includeRoot && child.NodeType != NodeType.DocumentFragment);
     }
 
-    private static (int Depth, int Nodes) Measure(INode root, int depthLimit, int sizeLimit, bool includeRoot)
+    private Exception BudgetError(string reason)
     {
+        if (Renderer is null) return TypeError(reason);
+        TerminateRenderer(reason);
+        return new RendererBudgetException(reason);
+    }
+
+    private int Measure(INode root, int depthLimit, int sizeLimit, bool includeRoot)
+    {
+        var renderer = Renderer;
+        var checkContent = renderer is not null && root is IDocument;
+        long remainingBytes = checkContent
+            ? Math.Max(renderer!.Options.MaximumResponseBytes, renderer.Options.MaximumPageResourceBytes) : 0;
         var stack = new Stack<(INode Node, int Depth)>();
-        if (includeRoot) stack.Push((root, 0));
-        else
-        {
-            if (root.ChildNodes.Length > sizeLimit) throw TypeError("Page DOM size limit exceeded");
-            foreach (var child in root.ChildNodes) stack.Push((child, 0));
-        }
         var count = 0;
-        var deepest = 0;
+        if (includeRoot) stack.Push((root, 0));
+        else PushChildren(root, 0);
         while (stack.TryPop(out var item))
         {
-            if (item.Depth > depthLimit || ++count > sizeLimit || (long)count + stack.Count + item.Node.ChildNodes.Length > sizeLimit)
-                throw TypeError("Page DOM size or depth limit exceeded");
-            deepest = Math.Max(deepest, item.Depth);
-            foreach (var child in item.Node.ChildNodes) stack.Push((child, item.Depth + 1));
+            if (item.Depth > depthLimit || ++count > sizeLimit) throw BudgetError("Page DOM size or depth limit exceeded");
+            if (checkContent)
+            {
+                _page.Lifetime.ThrowIfCancellationRequested();
+                if (item.Node.NodeValue is { } value) AccountText(value);
+                if (item.Node is IHtmlInputElement input) AccountText(input.Value);
+                else if (item.Node is IHtmlTextAreaElement textarea) AccountText(textarea.Value);
+                if (item.Node is IElement element)
+                {
+                    AccountText(element.NodeName);
+                    foreach (var attribute in element.Attributes)
+                    {
+                        AccountText(attribute.Name);
+                        AccountText(attribute.Value);
+                    }
+                }
+            }
+            PushChildren(item.Node, item.Depth + 1);
         }
-        return (deepest, count);
+        return count;
+
+        void PushChildren(INode node, int depth)
+        {
+            var template = renderer is not null ? (node as IHtmlTemplateElement)?.Content : null;
+            if ((long)count + stack.Count + node.ChildNodes.Length + (template?.ChildNodes.Length ?? 0) > sizeLimit)
+                throw BudgetError("Page DOM size limit exceeded");
+            foreach (var child in node.ChildNodes) stack.Push((child, depth));
+            if (template is not null)
+                foreach (var child in template.ChildNodes) stack.Push((child, depth));
+        }
+
+        void AccountText(string text)
+        {
+            if (text.Length > remainingBytes) throw BudgetError("Page DOM content limit exceeded");
+            remainingBytes -= Encoding.UTF8.GetByteCount(text);
+            if (remainingBytes < 0) throw BudgetError("Page DOM content limit exceeded");
+        }
+    }
+
+    private void CheckDomText(string text, string source, bool checkUtf8 = false)
+    {
+        if (BrowserOptions is { MaximumResponseBytes: var limit } && (text.Length > limit ||
+            (checkUtf8 || Renderer is not null) && Encoding.UTF8.GetByteCount(text) > limit))
+            throw BudgetError($"{source} exceeds the page size limit");
     }
 
     private INode CreateText(string text)
     {
-        if (_page.Browser is { } browser && text.Length > browser.Options.MaximumResponseBytes)
-            throw TypeError("Text exceeds the page size limit");
+        CheckDomText(text, "Text");
         return AccountNode(_page.Document.CreateTextNode(text));
     }
 
     private void SetInnerHtml(IElement element, string html)
     {
-        if (_page.Browser is not { } browser) { element.InnerHtml = html; return; }
-        if (html.Length > browser.Options.MaximumResponseBytes) throw TypeError("Markup exceeds the page size limit");
+        if (BrowserOptions is null) { element.InnerHtml = html; return; }
+        CheckDomText(html, "Markup");
         var staging = (IElement)element.Clone(false);
         staging.InnerHtml = html;
         CheckInsert(element, staging, includeRoot: false);
@@ -71,9 +114,7 @@ internal sealed partial class HtmlScriptHost
         if (element.Parent is not { } parent) return;
         if (parent is IDocument)
             throw new JsException(JsValue.From(new JsError("NoModificationAllowedError", "Cannot replace an element whose parent is the document")));
-        if (_page.Browser is { } browser && (html.Length > browser.Options.MaximumResponseBytes ||
-            Encoding.UTF8.GetByteCount(html) > browser.Options.MaximumResponseBytes))
-            throw TypeError("Markup exceeds the page size limit");
+        CheckDomText(html, "Markup", checkUtf8: true);
 
         // A fragment parent uses an HTML body as its parsing context, not the replaced element.
         var context = parent as IElement ?? _page.Document.CreateElement("body");

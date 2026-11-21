@@ -19,21 +19,32 @@ public sealed record HtmlScriptError(string Source, Exception Exception);
 /// <summary>A parsed page and its JavaScript state. Access live pages on their owning thread.</summary>
 public sealed class HtmlPage : IDisposable
 {
-    private readonly CancellationTokenSource _lifetime = new();
+    private readonly CancellationTokenSource _lifetime;
     private readonly Dictionary<IElement, string> _styles = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<IElement, byte[]> _images = new(ReferenceEqualityComparer.Instance);
+    private Dictionary<IElement, HtmlRendererPixels>? _pixels;
+    private Dictionary<IElement, int>? _rendererIds;
+    private Dictionary<int, IElement>? _rendererElements;
+    private Dictionary<IElement, int>? _previousRendererIds;
+    private HtmlRendererSession? _renderer;
+    private readonly HtmlPublicNetwork.Scope? _publicScope;
     private HtmlScriptHost? _scripts;
     private bool _dirty;
     private bool _disposed;
     private bool _executingDefault;
 
-    private HtmlPage(IDocument document, HtmlBrowser? browser = null, Uri? address = null)
+    private HtmlPage(IDocument document, HtmlBrowser? browser = null, Uri? address = null,
+        HtmlPublicNetwork.Scope? publicScope = null, HtmlRendererDocument? rendererContext = null,
+        SynchronizationContext? context = null, CancellationToken rendererLifetime = default)
     {
+        _lifetime = rendererLifetime.CanBeCanceled ? CancellationTokenSource.CreateLinkedTokenSource(rendererLifetime) : new();
         Document = document;
         Browser = browser;
         Address = address;
         Lifetime = _lifetime.Token;
-        Context = browser?.Context ?? SynchronizationContext.Current;
+        Context = context ?? browser?.Context ?? SynchronizationContext.Current;
+        _publicScope = publicScope;
+        RendererContext = rendererContext;
     }
 
     public string Title => Document.Title ?? "";
@@ -44,7 +55,9 @@ public sealed class HtmlPage : IDisposable
     public Uri? ResolveAddress(string reference) => Uri.TryCreate(BaseAddress, reference.Trim(), out var result) &&
         HtmlResources.IsHttpAddress(result) ? result : null;
 
-    internal IDocument Document { get; }
+    internal IDocument Document { get; private set; }
+    internal HtmlRendererDocument? RendererContext { get; }
+    internal bool IsRendererMirror => _rendererIds is not null;
     internal HtmlBrowser? Browser { get; }
     internal SynchronizationContext? Context { get; }
     internal CancellationToken Lifetime { get; }
@@ -54,6 +67,14 @@ public sealed class HtmlPage : IDisposable
     internal event Action? Changed;
     internal string? GetExternalStyle(IElement link) => _styles.GetValueOrDefault(link);
     internal byte[]? GetImage(IElement image) => _images.GetValueOrDefault(image);
+    internal HtmlRendererPixels? GetPixels(IElement image) => _pixels?.GetValueOrDefault(image);
+    internal int GetRendererId(IElement element)
+    {
+        if (_rendererIds?.TryGetValue(element, out var id) == true) return id;
+        return _previousRendererIds?.GetValueOrDefault(element) ?? 0;
+    }
+
+    internal IElement? FindRendererElement(int id) => _rendererElements?.GetValueOrDefault(id);
 
     /// <summary>Parses HTML and runs its inline classic scripts in document order.</summary>
     public static HtmlPage Parse(string html, HtmlPageOptions? options = null)
@@ -78,11 +99,19 @@ public sealed class HtmlPage : IDisposable
         return page;
     }
 
-    internal static async Task<HtmlPage> LoadDocumentAsync(HtmlBrowser browser, HtmlResource resource, CancellationToken token)
+    internal static Task<HtmlPage> LoadDocumentAsync(HtmlBrowser browser, HtmlResource resource, CancellationToken token,
+        HtmlPublicNetwork.Scope? publicScope = null) => LoadDocumentCoreAsync(browser.Options, resource, token, browser, publicScope);
+
+    internal static Task<HtmlPage> LoadRendererDocumentAsync(HtmlRendererDocument renderer, SynchronizationContext context,
+        HtmlResource resource, CancellationToken token) => LoadDocumentCoreAsync(renderer.Options, resource, token, renderer: renderer, context: context);
+
+    private static async Task<HtmlPage> LoadDocumentCoreAsync(HtmlBrowserOptions options, HtmlResource resource, CancellationToken token,
+        HtmlBrowser? browser = null, HtmlPublicNetwork.Scope? publicScope = null, HtmlRendererDocument? renderer = null,
+        SynchronizationContext? context = null)
     {
         var mediaType = resource.ContentType?.Split(';', 2)[0].Trim().ToLowerInvariant();
         var imageResponse = mediaType?.StartsWith("image/", StringComparison.Ordinal) == true;
-        var supportedImage = imageResponse && resource.IsSuccess && HtmlRaster.GetPixelCount(resource.Bytes) > 0;
+        var supportedImage = imageResponse && publicScope is null && resource.IsSuccess && HtmlRaster.GetPixelCount(resource.Bytes) > 0;
         var document = await Task.Run(() =>
         {
             var parser = new HtmlParser();
@@ -95,8 +124,9 @@ public sealed class HtmlPage : IDisposable
             return parser.ParseDocument(html ? text : "<!doctype html><pre>" + WebUtility.HtmlEncode(text) + "</pre>");
         }, token);
         token.ThrowIfCancellationRequested();
-        ValidateTree(document, browser.Options, token);
-        var page = new HtmlPage(document, browser, resource.Address);
+        ValidateTree(document, options, token);
+        var page = new HtmlPage(document, browser, resource.Address, publicScope, renderer, context,
+            renderer is null ? default : token);
         try
         {
             if (supportedImage)
@@ -104,7 +134,7 @@ public sealed class HtmlPage : IDisposable
             else if (imageResponse)
                 page.ResourceStatus = "Unsupported or invalid image.";
             else if (resource.IsSuccess)
-                await page.LoadAssetsAsync(token);
+                await page.LoadAssetsAsync(options, token);
             return page;
         }
         catch
@@ -130,9 +160,8 @@ public sealed class HtmlPage : IDisposable
         }
     }
 
-    private async Task LoadAssetsAsync(CancellationToken token)
+    private async Task LoadAssetsAsync(HtmlBrowserOptions options, CancellationToken token)
     {
-        var options = Browser!.Options;
         var assets = Document.QuerySelectorAll("link[href], img[src]").Where(element => element.LocalName == "img" ||
             (element.GetAttribute("rel") ?? "").Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
                 .Contains("stylesheet", StringComparer.OrdinalIgnoreCase) && !element.HasAttribute("disabled"));
@@ -148,21 +177,26 @@ public sealed class HtmlPage : IDisposable
                 var data = element.LocalName == "img" && reference?.StartsWith("data:", StringComparison.OrdinalIgnoreCase) == true
                     ? reference : null;
                 var address = data is null && !string.IsNullOrWhiteSpace(reference) ? ResolveAddress(reference) : null;
-                return (Element: element, Key: data ?? (address is null ? null : HtmlResources.WithoutFragment(address).AbsoluteUri));
+                return (Element: element, Key: (Reference: data ?? (address is null ? null : HtmlResources.WithoutFragment(address).AbsoluteUri),
+                    Kind: element.LocalName == "img" ? HtmlPublicRequestKind.Image : HtmlPublicRequestKind.Style));
             })
-            .GroupBy(asset => asset.Key, StringComparer.Ordinal).Chunk(4))
+            .GroupBy(asset => asset.Key).Chunk(4))
         {
             var results = await Task.WhenAll(group.Select(async assetsAtAddress =>
             {
-                var reference = assetsAtAddress.Key;
+                var (reference, kind) = assetsAtAddress.Key;
                 try
                 {
                     token.ThrowIfCancellationRequested();
-                    if (reference is null)
+                    if (reference is null || _publicScope is not null && kind == HtmlPublicRequestKind.Image)
                         return null;
                     if (reference.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
                         return DecodeEmbeddedImage(reference, options.MaximumResponseBytes);
-                    return await Browser.Resources.LoadAsync(new Uri(reference), token);
+                    if (RendererContext is { } renderer)
+                        return await renderer.LoadAsync(new(kind, reference, "GET", null, null), token);
+                    if (_publicScope is { } scope)
+                        return await scope.LoadAsync(new Uri(reference), token, kind);
+                    return await Browser!.Resources.LoadAsync(new Uri(reference), token);
                 }
                 catch (Exception exception) when (exception is HttpRequestException or IOException)
                 {
@@ -194,8 +228,8 @@ public sealed class HtmlPage : IDisposable
                         else
                             failures++;
                     }
-                    else if (result.ContentType is null ||
-                        string.Equals(result.ContentType.Split(';', 2)[0].Trim(), "text/css", StringComparison.OrdinalIgnoreCase))
+                    else if (result.ContentType is null && _publicScope is null && RendererContext is null ||
+                        string.Equals(result.ContentType?.Split(';', 2)[0].Trim(), "text/css", StringComparison.OrdinalIgnoreCase))
                         _styles[element] = css ??= result.DecodeText();
                     else
                         failures++;
@@ -243,13 +277,48 @@ public sealed class HtmlPage : IDisposable
 
     public void PumpTasks() => _scripts?.PumpTasks();
 
-    internal void NotifyHistory(Uri previous, bool traversing) => _scripts?.NotifyHistory(previous, traversing);
+    internal void NotifyHistory(Uri previous, bool traversing)
+    {
+        if (_renderer is { } renderer && Address is { } address)
+            renderer.Send(new(HtmlRendererInputKind.Address, Text: address.AbsoluteUri, Index: traversing ? 1 : 0));
+        else _scripts?.NotifyHistory(previous, traversing);
+    }
+
+    internal static HtmlPage CreateRendererMirror(HtmlBrowser browser, Uri address) =>
+        new(new HtmlParser().ParseDocument(""), browser, address);
+
+    internal void AttachRenderer(HtmlRendererSession renderer) => _renderer = renderer;
+
+    internal void ApplyRendererSnapshot(HtmlRendererSnapshot snapshot, int focusedId)
+    {
+        var mirror = HtmlRendererProjection.Materialize(snapshot);
+        Document = mirror.Document;
+        _previousRendererIds = _rendererIds;
+        _rendererIds = mirror.Ids;
+        _rendererElements = mirror.Ids.ToDictionary(pair => pair.Value, pair => pair.Key);
+        _pixels = mirror.Images;
+        FocusedElement = FindRendererElement(focusedId);
+        _styles.Clear();
+        foreach (var (element, css) in mirror.Styles) _styles.Add(element, css);
+        _images.Clear();
+        MarkDirty();
+        try { PublishChanges(); }
+        finally { _previousRendererIds = null; }
+    }
+
+    internal void SendRendererInput(IElement? node, HtmlRendererInputKind kind, string? text = null, int index = -1)
+    {
+        if (_renderer is not { } renderer || _rendererIds is not { } ids) return;
+        if (node is null) renderer.Send(new(kind, Text: text, Index: index));
+        else if (ids.TryGetValue(node, out var id)) renderer.Send(new(kind, id, text, index));
+    }
 
     internal bool DispatchEvent(IElement node, string type, bool bubbles = true, bool cancelable = false) =>
         _scripts?.DispatchEvent(node, type, bubbles, cancelable) ?? true;
 
     internal void SetFocusedElement(IElement? element)
     {
+        if (IsRendererMirror) { SendRendererInput(element, HtmlRendererInputKind.Focus); return; }
         if (ReferenceEquals(FocusedElement, element))
             return;
         var previous = FocusedElement;
@@ -277,6 +346,11 @@ public sealed class HtmlPage : IDisposable
     {
         if (_disposed || !Document.Contains(target))
             return Task.CompletedTask;
+        if (IsRendererMirror)
+        {
+            SendRendererInput(target, HtmlRendererInputKind.Click);
+            return Task.CompletedTask;
+        }
         IElement? control = target;
         while (control is not null && !IsDisclosureSummary(control) &&
             !control.Matches("a[href], button, input, label, select, textarea"))
@@ -349,8 +423,11 @@ public sealed class HtmlPage : IDisposable
             if (control.GetAttribute("type")?.ToLowerInvariant() == "reset" && control.LocalName is "button" or "input")
                 ResetForm(form);
         }
-        if (control?.LocalName == "a" && ResolveAddress(control.GetAttribute("href")!) is { } address && Browser is { } browser)
-            return browser.NavigateAsync(address);
+        if (control?.LocalName == "a" && ResolveAddress(control.GetAttribute("href")!) is { } address)
+        {
+            if (RendererContext is { } renderer) renderer.Navigate(new(address.AbsoluteUri, "GET"));
+            else if (Browser is { } browser) return browser.NavigateAsync(address);
+        }
         return Task.CompletedTask;
     }
 
@@ -376,9 +453,20 @@ public sealed class HtmlPage : IDisposable
 
     internal Task SubmitFormAsync(IElement form, IElement? submitter = null, bool dispatch = true)
     {
-        if (Browser is null || dispatch && !DispatchEvent(form, "submit", cancelable: true))
+        if (IsRendererMirror)
+        {
+            SendRendererInput(form, HtmlRendererInputKind.Submit);
             return Task.CompletedTask;
-        return HtmlForms.CreateRequest(this, form, submitter) is { } request ? Browser.SubmitAsync(request) : Task.CompletedTask;
+        }
+        if (Browser is null && RendererContext is null || dispatch && !DispatchEvent(form, "submit", cancelable: true) ||
+            HtmlForms.CreateRequest(this, form, submitter) is not { } request)
+            return Task.CompletedTask;
+        if (RendererContext is { } renderer)
+        {
+            renderer.Navigate(new(request.Address.AbsoluteUri, request.Method.Method, request.Body, request.EncodedQuery));
+            return Task.CompletedTask;
+        }
+        return Browser!.SubmitAsync(request);
     }
 
     internal void ResetForm(IElement form)
@@ -406,6 +494,8 @@ public sealed class HtmlPage : IDisposable
     {
         if (!Lifetime.IsCancellationRequested)
             _lifetime.Cancel();
+        _renderer?.Dispose();
+        _renderer = null;
         _scripts?.Dispose();
         _scripts = null;
     }

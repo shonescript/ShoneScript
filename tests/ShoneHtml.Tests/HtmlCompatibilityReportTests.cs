@@ -96,11 +96,15 @@ public sealed class HtmlCompatibilityReportTests
     }
 
     [Fact]
-    public async Task DefaultBrowserDoesNotDownloadOrExecuteReportScripts()
+    public async Task ScriptOptionsDisableReportScriptDownloadAndExecution()
     {
         var requests = new ConcurrentQueue<string>();
         await using var server = StartReport(requests);
-        using var browser = new HtmlBrowser();
+        using var browser = new HtmlBrowser(new HtmlBrowserOptions
+        {
+            ScriptMode = HtmlBrowserScriptMode.TrustedInProcess,
+            ScriptOptions = new() { EnableScripts = false }
+        });
 
         await browser.NavigateAsync(server.Root).WaitAsync(TestTimeout);
         await browser.RunAsync(async () =>

@@ -78,11 +78,11 @@ internal sealed partial class HtmlScriptHost
         lock (_timers)
         {
             if (_timersDisposed || _page.Lifetime.IsCancellationRequested) return JsValue.From(0d);
-            if (_timers.Count >= 128) throw TypeError("Page timer limit exceeded");
+            if (_timers.Count >= 128) throw BudgetError("Page timer limit exceeded");
             var id = ++_nextTimer;
             var timer = new Timer(_ =>
             {
-                if (!_tasks.Post(repeat ? "setInterval" : "setTimeout", () =>
+                if (!PostTask(repeat ? "setInterval" : "setTimeout", () =>
                 {
                     lock (_timers) if (!_timers.ContainsKey(id)) return;
                     if (!repeat) ClearTimer(id);
@@ -119,12 +119,19 @@ internal sealed partial class HtmlScriptHost
     {
         var location = NewObject();
         var browser = _page.Browser;
+        var renderer = Renderer;
         Uri Current() => _page.Address ?? new Uri("about:blank");
         void Navigate(string text, bool replace = false)
         {
-            if (browser is null) return;
-            if (!Uri.TryCreate(Current(), text, out var url) || !HtmlResources.IsHttpAddress(url)) throw TypeError("Invalid navigation URL");
-            _ = replace ? browser.NavigateReplacingAsync(url) : browser.NavigateAsync(url);
+            if (renderer is null && browser is null) return;
+            if ((renderer is not null && text.Length > 8192) || !Uri.TryCreate(Current(), text, out var url) || !HtmlResources.IsHttpAddress(url))
+                throw TypeError("Invalid navigation URL");
+            if (renderer is not null)
+            {
+                if (url.AbsoluteUri.Length > 8192) throw TypeError("Invalid navigation URL");
+                renderer.Navigate(new(url.AbsoluteUri, "GET", Replace: replace));
+            }
+            else _ = replace ? browser!.NavigateReplacingAsync(url) : browser!.NavigateAsync(url);
         }
         foreach (var name in UrlParts)
         {
@@ -137,11 +144,14 @@ internal sealed partial class HtmlScriptHost
         }
         Method(location, "assign", 1, (_, a) => { Navigate(Arg(a, 0).ToJsString()); return JsValue.Undefined; });
         Method(location, "replace", 1, (_, a) => { Navigate(Arg(a, 0).ToJsString(), true); return JsValue.Undefined; });
-        Method(location, "reload", 0, (_, _) => { if (browser is not null) _ = browser.RefreshAsync(); return JsValue.Undefined; });
+        if (renderer is null)
+            Method(location, "reload", 0, (_, _) => { if (browser is not null) _ = browser.RefreshAsync(); return JsValue.Undefined; });
         Method(location, "toString", 0, (_, _) => JsValue.From(Current().AbsoluteUri));
         Accessor(_window, "location", _ => JsValue.From(location), (_, value) => Navigate(value.ToJsString()));
         Accessor(_documentPrototype, "location", _ => JsValue.From(location), (_, value) => Navigate(value.ToJsString()));
 
+        // Session history belongs to the browser, not to the renderer document.
+        if (renderer is not null) return;
         var history = NewObject();
         Accessor(history, "length", _ => JsValue.From((double)(browser?.HistoryLength ?? 1)));
         Accessor(history, "state", _ => ReadHistoryState());

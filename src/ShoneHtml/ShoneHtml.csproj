@@ -9,5 +9,7 @@
     <PackageReference Include="AngleSharp" Version="1.10.5" />
     <PackageReference Include="Aprillz.MewUI.Core" Version="0.22.1" />
     <InternalsVisibleTo Include="ShoneHtml.Tests" />
+    <InternalsVisibleTo Include="ShoneHtml.Worker" />
+    <InternalsVisibleTo Include="ShoneDemo" />
   </ItemGroup>
 </Project>

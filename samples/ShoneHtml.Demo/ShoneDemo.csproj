@@ -4,10 +4,45 @@
     <TargetFramework>net11.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <_WorkerRuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">$(NETCoreSdkRuntimeIdentifier)</_WorkerRuntimeIdentifier>
+    <_WorkerRuntimeIdentifier Condition="'$(RuntimeIdentifier)' != ''">$(RuntimeIdentifier)</_WorkerRuntimeIdentifier>
+    <_WorkerProject>../../src/ShoneHtml.Worker/ShoneHtml.Worker.csproj</_WorkerProject>
+    <!-- Worker deployment is currently validated for native Windows x64 builds. -->
+    <_DeployWindowsHtmlWorker Condition="'$(NETCoreSdkRuntimeIdentifier)' == 'win-x64' and '$(_WorkerRuntimeIdentifier)' == 'win-x64'">true</_DeployWindowsHtmlWorker>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Aprillz.MewUI" Version="0.22.1" />
     <ProjectReference Include="../../src/ShoneHtml/ShoneHtml.csproj" />
+    <!-- Include the worker in NuGet restore without linking it into the Demo. -->
+    <ProjectReference Include="$(_WorkerProject)" Condition="'$(_DeployWindowsHtmlWorker)' == 'true'"
+                      ReferenceOutputAssembly="false" BuildReference="false" SkipGetTargetFrameworkProperties="true"
+                      Private="false" PrivateAssets="all" />
   </ItemGroup>
+
+  <Target Name="_GetWindowsWorkerFiles" Condition="'$(_DeployWindowsHtmlWorker)' == 'true' and '$(DesignTimeBuild)' != 'true'">
+    <MSBuild Projects="$(_WorkerProject)" Targets="GetWorkerDeploymentFiles"
+             RemoveProperties="RuntimeIdentifier;SelfContained;PublishDir;PublishSingleFile;PublishAot;PublishTrimmed;PublishReadyToRun;UseAppHost;NoBuild;OutputPath;OutDir">
+      <Output TaskParameter="TargetOutputs" ItemName="_WindowsWorkerFile" />
+    </MSBuild>
+  </Target>
+
+  <Target Name="_CopyWindowsWorkerToBuildOutput" AfterTargets="CopyFilesToOutputDirectory" DependsOnTargets="_GetWindowsWorkerFiles"
+          Condition="'$(_DeployWindowsHtmlWorker)' == 'true' and '$(DesignTimeBuild)' != 'true'">
+    <Copy SourceFiles="@(_WindowsWorkerFile)"
+          DestinationFiles="@(_WindowsWorkerFile->'$(OutDir)ShoneHtml.Worker/%(RelativePath)')" SkipUnchangedFiles="true">
+      <Output TaskParameter="DestinationFiles" ItemName="FileWrites" />
+    </Copy>
+  </Target>
+
+  <Target Name="_IncludeWindowsWorkerInPublish" AfterTargets="ComputeFilesToPublish" DependsOnTargets="_GetWindowsWorkerFiles"
+          Condition="'$(_DeployWindowsHtmlWorker)' == 'true'">
+    <ItemGroup>
+      <ResolvedFileToPublish Include="@(_WindowsWorkerFile)">
+        <RelativePath>ShoneHtml.Worker/%(_WindowsWorkerFile.RelativePath)</RelativePath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+        <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
 </Project>

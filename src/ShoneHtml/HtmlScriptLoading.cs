@@ -19,10 +19,13 @@ internal sealed partial class HtmlScriptHost
         var registration = _page.Lifetime.Register(() => completion.TrySetCanceled(_page.Lifetime));
         _ = completion.Task.ContinueWith(_ => registration.Dispose(), CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         if (completion.Task.IsCompleted) return completion.Task;
-        var scripts = _page.Document.QuerySelectorAll("script").Select((element, index) => DescribeScript(element, index + 1))
-            .OfType<Script>().Take(MaximumScripts + 1).ToArray();
+        Script[] scripts = Renderer is { } renderer && (renderer.HasCsp || _page.Document.QuerySelectorAll("meta[http-equiv]").Any(meta =>
+            string.Equals(meta.GetAttribute("http-equiv")?.Trim(), "content-security-policy", StringComparison.OrdinalIgnoreCase)))
+            ? [] : _page.Document.QuerySelectorAll("script").Select((element, index) => DescribeScript(element, index + 1))
+                .OfType<Script>().Take(MaximumScripts + 1).ToArray();
         if (scripts.Length > MaximumScripts)
         {
+            if (Renderer is not null) throw BudgetError("Page script limit exceeded.");
             _report?.Invoke(new HtmlScriptError("document", new InvalidOperationException("Page script limit exceeded.")));
             scripts = scripts[..MaximumScripts];
         }
@@ -108,12 +111,15 @@ internal sealed partial class HtmlScriptHost
         element.NamespaceUri == "http://www.w3.org/1999/xhtml" &&
         (IsModule(element) || !element.HasAttribute("nomodule") && ClassicTypes.Contains(element.GetAttribute("type")?.Trim() ?? ""));
 
+    internal static bool IsJavaScriptMediaType(string? contentType) =>
+        contentType?.Split(';', 2)[0].Trim() is { Length: > 0 } media && ClassicTypes.Contains(media);
+
     private static bool IsModule(IElement element) =>
         string.Equals(element.GetAttribute("type")?.Trim(), "module", StringComparison.OrdinalIgnoreCase);
 
-    private static Script? DescribeScript(IElement element, int index)
+    private Script? DescribeScript(IElement element, int index)
     {
-        if (!IsExecutableScript(element)) return null;
+        if (!IsExecutableScript(element) || Renderer is not null && element.HasAttribute("integrity")) return null;
         var module = IsModule(element);
         var src = element.GetAttribute("src");
         var async = (module || src is not null) && element.HasAttribute("async");
@@ -135,14 +141,14 @@ internal sealed partial class HtmlScriptHost
             if (script.Module)
             {
                 var graph = await DownloadGraphAsync(script).ConfigureAwait(false);
-                if (!_tasks.Post(source, () => EvaluateGraph(script, graph, done))) FailToSchedule();
+                if (!PostTask(source, () => EvaluateGraph(script, graph, done))) FailToSchedule();
             }
             else
             {
                 var resource = await DownloadScriptAsync(address!, module: false).ConfigureAwait(false);
                 source = $"script[{script.Index}] ({resource.Address.AbsoluteUri})";
                 var text = resource.DecodeText();
-                if (!_tasks.Post(source, () =>
+                if (!PostTask(source, () =>
                 {
                     var success = false;
                     Run(source, () => { _engine.Evaluate(text); success = true; });
@@ -152,9 +158,14 @@ internal sealed partial class HtmlScriptHost
             }
         }
         catch (OperationCanceledException) when (_page.Lifetime.IsCancellationRequested) { }
+        catch (RendererBudgetException) { }
+        catch (InvalidOperationException error) when (Renderer is not null && IsEngineBudgetError(error))
+        {
+            TerminateRenderer(error.Message);
+        }
         catch (Exception error) when (error is HttpRequestException or IOException or InvalidOperationException or FormatException or ArgumentException or ShoneJs.Parsing.JsSyntaxException)
         {
-            if (!_tasks.Post(source, () =>
+            if (!PostTask(source, () =>
             {
                 _report?.Invoke(new HtmlScriptError(source, error));
                 FinishScript(script, done, success: false);
@@ -180,19 +191,29 @@ internal sealed partial class HtmlScriptHost
         done();
     }
 
-    private Uri ScriptAddress(Script script) => !string.IsNullOrWhiteSpace(script.Src) && _page.ResolveAddress(script.Src) is { } address
+    private Uri ScriptAddress(Script script) => !string.IsNullOrWhiteSpace(script.Src) &&
+        (Renderer is null || script.Src.Length <= 8192) && _page.ResolveAddress(script.Src) is { } address
         ? HtmlResources.WithoutFragment(address) : throw new HttpRequestException("Invalid script URL.");
 
     private async Task<HtmlResource> DownloadScriptAsync(Uri address, bool module)
     {
-        if (_page.Browser is not { } browser || _page.Address is not { } origin || !HtmlResources.IsHttpAddress(address) || !HtmlResources.SameOrigin(origin, address))
+        var renderer = Renderer;
+        var origin = renderer?.Origin ?? _page.Address;
+        if (origin is null || !HtmlResources.IsHttpAddress(address) || !HtmlResources.SameOrigin(origin, address) ||
+            renderer is not null && address.AbsoluteUri.Length > 8192)
             throw new HttpRequestException("Only same-origin HTTP(S) scripts are supported.");
-        var resource = await browser.Resources.LoadAsync(address, _page.Lifetime, allowRedirect: (_, next) => HtmlResources.SameOrigin(origin, next)).ConfigureAwait(false);
+        var resource = renderer is not null
+            ? await renderer.LoadAsync(new(HtmlPublicRequestKind.Script, address.AbsoluteUri, "GET", null, null), _page.Lifetime).ConfigureAwait(false)
+            : _page.Browser is { } browser
+                ? await browser.Resources.LoadAsync(address, _page.Lifetime, allowRedirect: (_, next) => HtmlResources.SameOrigin(origin, next)).ConfigureAwait(false)
+                : throw new HttpRequestException("Script loading requires a browser document.");
+        if (renderer is not null && !HtmlResources.SameOrigin(origin, resource.Address))
+            throw new HttpRequestException("Script redirect must stay within the document origin.");
         if (!resource.IsSuccess) throw new HttpRequestException($"Script request returned HTTP {(int)resource.Status}.");
         var media = resource.ContentType?.Split(';', 2)[0].Trim();
-        if (module && (string.IsNullOrEmpty(media) || !ClassicTypes.Contains(media)))
-            throw new HttpRequestException("Module response does not have a JavaScript media type.");
-        if (!module && (media?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) == true ||
+        if ((module || renderer is not null) && !IsJavaScriptMediaType(media))
+            throw new HttpRequestException(module ? "Module response does not have a JavaScript media type." : "Script response does not have a JavaScript media type.");
+        if (!module && renderer is null && (media?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) == true ||
             media?.StartsWith("audio/", StringComparison.OrdinalIgnoreCase) == true || media?.StartsWith("video/", StringComparison.OrdinalIgnoreCase) == true ||
             media?.Equals("text/csv", StringComparison.OrdinalIgnoreCase) == true ||
             resource.Headers.TryGetValue("X-Content-Type-Options", out var options) && options.Equals("nosniff", StringComparison.OrdinalIgnoreCase) &&
@@ -217,7 +238,11 @@ internal sealed partial class HtmlScriptHost
         async Task<Uri> Visit(Uri url, string? inline = null)
         {
             if (requested.TryGetValue(url, out var key)) return key;
-            if (requested.Count >= MaximumScripts) throw new InvalidOperationException("Module dependency count exceeded.");
+            if (requested.Count >= MaximumScripts)
+            {
+                if (Renderer is not null) throw BudgetError("Module dependency count exceeded.");
+                throw new InvalidOperationException("Module dependency count exceeded.");
+            }
             _page.Lifetime.ThrowIfCancellationRequested();
             var source = inline is null
                 ? await _moduleSources.GetOrAdd(url, uri => new Lazy<Task<ModuleSource>>(() => DownloadModuleAsync(uri))).Value.ConfigureAwait(false)
@@ -225,7 +250,11 @@ internal sealed partial class HtmlScriptHost
             requested.Add(url, source.Address);
             if (sources.ContainsKey(source.Address)) return source.Address;
             bytes += source.Size;
-            if (bytes > MaximumModuleBytes) throw new InvalidOperationException("Module graph size exceeded.");
+            if (bytes > MaximumModuleBytes)
+            {
+                if (Renderer is not null) throw BudgetError("Module graph size exceeded.");
+                throw new InvalidOperationException("Module graph size exceeded.");
+            }
             var baseAddress = inline is null ? source.Address : _page.BaseAddress;
             var map = new Dictionary<string, Uri>(StringComparer.Ordinal);
             sources.Add(source.Address, new ModuleEntry(source.Parsed, map));
@@ -265,7 +294,7 @@ internal sealed partial class HtmlScriptHost
             var then = (promise.Data as JsObject)?.Get("then").Data as JsFunction ?? throw new InvalidOperationException("Module did not return a promise.");
             void PostFinish(bool success, JsValue reason)
             {
-                if (!_tasks.Post(source, () =>
+                if (!PostTask(source, () =>
                 {
                     if (!success) _report?.Invoke(new HtmlScriptError(source, new JsException(reason)));
                     FinishScript(script, done, success);

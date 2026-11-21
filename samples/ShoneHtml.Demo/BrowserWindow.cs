@@ -5,17 +5,23 @@ using ShoneHtml;
 
 internal static class BrowserWindow
 {
-    internal static Window Create(string? initialAddress, string startPage, bool trustedScripts)
+    internal static Window Create(string? initialAddress, string startPage, HtmlBrowserScriptMode scriptMode)
     {
         var window = new Window()
             .Title("ShoneHtml")
             .Resizable(960, 680, minWidth: 420, minHeight: 260);
         var browser = new HtmlBrowser(new HtmlBrowserOptions
         {
-            EnableTrustedScripts = trustedScripts,
+            ScriptMode = scriptMode,
             GetDisplayMetrics = () => DisplayMetrics(window)
         }, new UiContext());
         var address = new TextBox().Placeholder("https://").Column(4);
+        var scriptStatus = scriptMode switch
+        {
+            HtmlBrowserScriptMode.Disabled => "Scripts disabled",
+            HtmlBrowserScriptMode.TrustedInProcess => "Trusted scripts (in process)",
+            _ => ""
+        };
         var status = new TextBlock().Text("Ready").Margin(10, 4).DockBottom();
         var closed = false;
         var back = ToolbarButton("\u2190", "Back (Alt+Left)", () => Run(browser.GoBackAsync)).Column(0);
@@ -23,7 +29,8 @@ internal static class BrowserWindow
         var refresh = ToolbarButton("\u21BB", "Reload (F5)", () => Run(browser.RefreshAsync)).Column(2);
         var stop = ToolbarButton("\u00D7", "Stop (Escape)", browser.Stop).Column(3);
         var go = ToolbarButton("\u21B5", "Go (Enter)", Navigate).Column(5);
-        var view = new HtmlView(browser, HtmlPage.Parse(startPage));
+        var view = new HtmlView(browser, HtmlPage.Parse(startPage,
+            new HtmlPageOptions { EnableScripts = scriptMode != HtmlBrowserScriptMode.Disabled }));
         string? displayedAddress = null;
         long displayedNavigation = -1;
 
@@ -84,7 +91,11 @@ internal static class BrowserWindow
             forward.IsEnabled = browser.CanGoForward;
             refresh.IsEnabled = browser.Address is not null;
             stop.IsEnabled = browser.IsLoading;
-            status.Text = browser.Status.Length > 0 ? browser.Status : trustedScripts ? "Trusted scripts enabled" : "Ready";
+            var navigationStatus = browser.Status;
+            if (scriptStatus.Length > 0)
+                status.Text = navigationStatus.Length > 0 ? $"{scriptStatus} | {navigationStatus}" : scriptStatus;
+            else
+                status.Text = navigationStatus.Length > 0 ? navigationStatus : "Ready";
             if (browser.Address?.AbsoluteUri is { } current &&
                 (current != displayedAddress || displayedNavigation != browser.NavigationVersion))
             {
