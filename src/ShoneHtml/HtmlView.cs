@@ -14,7 +14,8 @@ public sealed class HtmlView : Panel
 {
     private const double WheelStep = 48;
     private const double ScrollBarWidth = 14;
-    private static readonly Color ScrollBarTrack = Color.FromArgb(220, 219, 225, 230);
+    // Scrollbars are overlay controls: keep the track transparent and draw only the thumb.
+    private static readonly Color ScrollBarTrack = Color.FromArgb(0, 0, 0, 0);
     private const int MaxCachedTextLayouts = 2048;
     private const int MaxCachedTextLength = 256;
     private const int MaxDecodedImagePixels = 16_000_000;
@@ -46,6 +47,9 @@ public sealed class HtmlView : Panel
     private long _navigationVersion = -1;
     private bool _restoreScroll;
     private string? _fragment;
+    private double _pendingWheelX, _pendingWheelY;
+    private Point _pendingWheelPoint;
+    private bool _wheelDispatchPending;
 
     public HtmlView(HtmlPage page)
     {
@@ -170,7 +174,8 @@ public sealed class HtmlView : Panel
     {
         base.OnRender(context);
         if (_window is not null && !Bounds.IsEmpty)
-            context.FillRectangle(Bounds, Color.White);
+            // A page without an explicit CSS background uses the dark browser canvas.
+            context.FillRectangle(Bounds, Color.FromRgb(30, 30, 30));
     }
 
     protected override void RenderSubtree(IGraphicsContext context)
@@ -212,7 +217,7 @@ public sealed class HtmlView : Panel
         foreach (var child in Children)
         {
             if (child is ClipHost) continue;
-            if (child is ScrollBar bar && bar.IsVisible)
+            if (child is ScrollBar bar && bar.IsVisible && ScrollBarTrack.A > 0)
                 context.FillRectangle(bar.Bounds, ScrollBarTrack);
             child.Render(context);
         }
@@ -231,7 +236,8 @@ public sealed class HtmlView : Panel
         {
             if (bar.IsVisible)
             {
-                context.FillRectangle(host.Bounds, ScrollBarTrack);
+                if (ScrollBarTrack.A > 0)
+                    context.FillRectangle(host.Bounds, ScrollBarTrack);
                 host.Render(context);
             }
         }
@@ -314,16 +320,38 @@ public sealed class HtmlView : Panel
         base.OnMouseWheel(e);
         if (e.Handled || _window is null || Bounds.IsEmpty)
             return;
-        var layout = GetLayout(Bounds.Size);
-        var point = e.GetPosition(this);
-        var hit = CreateFrame(layout).HitTest(point);
-        var start = hit is { } item ? ScrollTarget(layout, item) : null;
+
+        // Wheel messages often arrive in a burst. Coalesce them into one layout/paint pass;
+        // this keeps wheel scrolling close to the smoothness of thumb dragging on long pages.
         var dx = -e.Delta.X * WheelStep;
         var dy = -e.Delta.Y * WheelStep;
         if (e.ShiftKey && dx == 0) (dx, dy) = (dy, 0);
+        _pendingWheelX += dx;
+        _pendingWheelY += dy;
+        _pendingWheelPoint = e.GetPosition(this);
+        if (!_wheelDispatchPending)
+        {
+            _wheelDispatchPending = true;
+            (Application.Current.Dispatcher ?? throw new InvalidOperationException("No UI dispatcher is available.")).BeginInvoke(ApplyPendingWheel);
+        }
+        e.Handled = dx != 0 || dy != 0;
+    }
+
+    private void ApplyPendingWheel()
+    {
+        _wheelDispatchPending = false;
+        var dx = _pendingWheelX;
+        var dy = _pendingWheelY;
+        _pendingWheelX = _pendingWheelY = 0;
+        if (_window is null || Bounds.IsEmpty || dx == 0 && dy == 0)
+            return;
+        var layout = GetLayout(Bounds.Size);
+        var hit = CreateFrame(layout).HitTest(_pendingWheelPoint);
+        var start = hit is { } item ? ScrollTarget(layout, item) : null;
         var handledX = dx != 0 && ScrollChain(layout, start, horizontal: true, _ => dx);
         var handledY = dy != 0 && ScrollChain(layout, start, horizontal: false, _ => dy);
-        e.Handled = handledX || handledY;
+        if (!handledX && !handledY)
+            RefreshLayout();
     }
 
     protected override void OnGotFocus()

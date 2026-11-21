@@ -14,9 +14,10 @@ public sealed class HtmlBrowserOptions
     /// <summary>Runs scripts in the browser process for explicitly trusted applications only.</summary>
     public bool EnableTrustedScripts { get; init; }
     public HtmlBrowserScriptMode ScriptMode { get; init; }
-    public int MaximumResponseBytes { get; init; } = 4 * 1024 * 1024;
-    public int MaximumPageResourceBytes { get; init; } = 16 * 1024 * 1024;
-    public int MaximumPageResources { get; init; } = 48;
+    // Modern sites such as Bing commonly split the page across many image, CSS and script resources.
+    public int MaximumResponseBytes { get; init; } = 8 * 1024 * 1024;
+    public int MaximumPageResourceBytes { get; init; } = 32 * 1024 * 1024;
+    public int MaximumPageResources { get; init; } = 128;
     public int MaximumDocumentNodes { get; init; } = 20_000;
     public int MaximumDocumentDepth { get; init; } = 96;
     public int MaximumRedirects { get; init; } = 10;

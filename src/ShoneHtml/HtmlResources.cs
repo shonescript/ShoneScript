@@ -24,6 +24,8 @@ internal sealed partial class HtmlResources : IDisposable
             PooledConnectionLifetime = TimeSpan.FromMinutes(5)
         }) { Timeout = Timeout.InfiniteTimeSpan };
         _client.DefaultRequestHeaders.UserAgent.ParseAdd(HtmlBrowser.UserAgent);
+        _client.DefaultRequestHeaders.Accept.ParseAdd("text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8");
+        _client.DefaultRequestHeaders.AcceptLanguage.ParseAdd("zh-CN,zh;q=0.9,en;q=0.8");
     }
 
     internal static bool IsHttpAddress(Uri? address) =>

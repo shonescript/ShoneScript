@@ -11,7 +11,8 @@ namespace ShoneHtml;
 
 internal readonly record struct HtmlTextStyle(string? FontFamily, double FontSize, bool Bold, bool Italic, Color Color)
 {
-    internal static readonly HtmlTextStyle Default = new(null, 16, false, false, Color.FromRgb(0, 0, 0));
+    // ShoneHtml uses a dark canvas unless a document supplies its own CSS colors.
+    internal static readonly HtmlTextStyle Default = new(null, 16, false, false, Color.FromRgb(232, 232, 232));
 }
 
 internal enum HtmlDisplay { Inline, Block, InlineBlock, None, Flex, InlineFlex, Grid, InlineGrid }
@@ -301,10 +302,12 @@ internal sealed class HtmlStyles
             case "dd": case "figure": case "figcaption": case "address": case "details": case "summary":
             case "table": case "thead": case "tbody": case "tfoot": case "tr": case "caption":
                 style.Display = HtmlDisplay.Block;
+                if (element.LocalName == "html") style.Background = Color.FromRgb(30, 30, 30);
                 break;
             case "body":
                 style.Display = HtmlDisplay.Block;
                 style.Margin = new(new CssLength(8));
+                style.Background = Color.FromRgb(30, 30, 30);
                 break;
             case "p": case "blockquote": case "pre":
                 style.Display = HtmlDisplay.Block;
@@ -341,7 +344,7 @@ internal sealed class HtmlStyles
                 style.Text = style.Text with { FontFamily = "monospace" };
                 break;
             case "a" when element.HasAttribute("href"):
-                style.Text = style.Text with { Color = Color.FromRgb(0, 0, 238) };
+                style.Text = style.Text with { Color = Color.FromRgb(104, 179, 255) };
                 break;
             case "input" when string.Equals(element.GetAttribute("type"), "hidden", StringComparison.OrdinalIgnoreCase):
                 style.Display = HtmlDisplay.None;
