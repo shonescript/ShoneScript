@@ -13,5 +13,6 @@
     <ProjectReference Include="../ShoneLisp/ShoneLisp.csproj" />
     <ProjectReference Include="../ShoneLua/ShoneLua.csproj" />
     <ProjectReference Include="../ShonePy/ShonePy.csproj" />
+    <ProjectReference Include="../ShoneProlog/ShoneProlog.csproj" />
   </ItemGroup>
 </Project>

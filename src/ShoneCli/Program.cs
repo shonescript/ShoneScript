@@ -9,17 +9,19 @@ using ShoneLisp.Parsing;
 using ShoneLisp.Runtime;
 using ShoneLua;
 using ShonePy;
+using ShoneProlog;
 
 const string usage = """
     Usage: ShoneScript [--ts] [--bigfloat] [-e <script>]
            ShoneScript --py [-e <script>]
            ShoneScript --lisp [-e <script>]
            ShoneScript --lua [-e <script>]
+           ShoneScript --prolog [-e <query>] [<file>]
            ShoneScript -h | --help
     Pipe a complete script to stdin or use the JavaScript prompt with no arguments.
     """;
 
-var language = args is ["--py" or "--lisp" or "--lua", ..] ? args[0] : null;
+var language = args is ["--py" or "--lisp" or "--lua" or "--prolog", ..] ? args[0] : null;
 if (language is not null) args = args[1..];
 
 bool typeScript = false, enableBigFloat = false;
@@ -44,9 +46,24 @@ if (args is ["-h" or "--help"])
 
 if (language is not null)
 {
-    if (args is ["-e", var script]) return EvaluateScript(language, script, "<command>");
-    if (args.Length == 0 && Console.IsInputRedirected)
-        return EvaluateScript(language, Console.In.ReadToEnd(), "<stdin>");
+    if (language == "--prolog")
+    {
+        if (args is ["-e", var query]) return EvaluateProlog(query, "<command>");
+        if (args.Length == 0 && Console.IsInputRedirected)
+            return EvaluateProlog(Console.In.ReadToEnd(), "<stdin>");
+        if (args is [var file])
+        {
+            try { return EvaluateProlog(File.ReadAllText(file), file); }
+            catch (IOException error) { Console.Error.WriteLine($"{file}: {error.Message}"); return 1; }
+            catch (UnauthorizedAccessException error) { Console.Error.WriteLine($"{file}: {error.Message}"); return 1; }
+        }
+    }
+    else
+    {
+        if (args is ["-e", var script]) return EvaluateScript(language, script, "<command>");
+        if (args.Length == 0 && Console.IsInputRedirected)
+            return EvaluateScript(language, Console.In.ReadToEnd(), "<stdin>");
+    }
     Console.Error.WriteLine(usage);
     return 2;
 }
@@ -80,6 +97,28 @@ while (true)
         return 0;
     if (!string.IsNullOrWhiteSpace(line))
         Evaluate(engine, line);
+}
+
+static int EvaluateProlog(string source, string fileName)
+{
+    try
+    {
+        var engine = new PrologEngine();
+        var result = engine.Evaluate(source, fileName);
+        if (!result.Succeeded) { Console.WriteLine("false."); return 1; }
+        foreach (var solution in result.Solutions)
+            Console.WriteLine(solution.Bindings.Count == 0 ? "true." : string.Join(", ", solution.Bindings.Select(binding => $"{binding.Key} = {binding.Value}")) + ".");
+        return 0;
+    }
+    catch (PrologParseException error)
+    {
+        return ReportDiagnostic(error.FileName ?? fileName, error.Position, "SyntaxError", error.Message);
+    }
+    catch (PrologRuntimeException error)
+    {
+        Console.Error.WriteLine($"{fileName}: RuntimeError: {error.Message}");
+        return 1;
+    }
 }
 
 static int EvaluateScript(string language, string source, string fileName)

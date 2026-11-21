@@ -1,0 +1,16 @@
+<!-- Copyright (c) 2026 Shone -->
+<!-- SPDX-License-Identifier: MIT -->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Authors>Shone</Authors>
+    <PackageId>ShoneProlog</PackageId>
+    <Description>A managed Prolog interpreter for .NET.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../ShoneJs/ShoneJS.csproj" />
+  </ItemGroup>
+</Project>
