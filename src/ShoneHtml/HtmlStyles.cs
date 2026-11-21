@@ -86,14 +86,16 @@ internal sealed class HtmlStyles
     private IElement? _focused;
     private IElement? _hovered;
     private IElement? _active;
+    private bool _dark;
 
-    internal void BeginLayout(double width, double height, IElement? focused, IElement? hovered, IElement? active)
+    internal void BeginLayout(double width, double height, IElement? focused, IElement? hovered, IElement? active, bool dark = true)
     {
         _width = width;
         _height = height;
         _focused = focused;
         _hovered = hovered;
         _active = active;
+        _dark = dark;
     }
 
     internal void EndLayout()
@@ -152,7 +154,7 @@ internal sealed class HtmlStyles
     internal HtmlStyle Compute(IElement element, in HtmlStyle parent, double rootFont)
     {
         var parentStyle = parent;
-        var style = DefaultStyle(element, parentStyle);
+        var style = DefaultStyle(element, parentStyle, _dark);
         if (_rules.Count > 0)
         {
             _matching.Clear();
@@ -292,9 +294,14 @@ internal sealed class HtmlStyles
         return false;
     }
 
-    private static HtmlStyle DefaultStyle(IElement element, HtmlStyle parent)
+    private static HtmlStyle DefaultStyle(IElement element, HtmlStyle parent, bool dark)
     {
         var style = new HtmlStyle(parent.Text) { WhiteSpace = parent.WhiteSpace, LineHeight = parent.LineHeight };
+        if (element.LocalName is "html" or "body")
+        {
+            style.Background = dark ? Color.FromRgb(30, 30, 30) : Color.FromRgb(255, 255, 255);
+            style.Text = style.Text with { Color = dark ? Color.FromRgb(232, 232, 232) : Color.FromRgb(0, 0, 0) };
+        }
         switch (element.LocalName)
         {
             case "html": case "main": case "section": case "article": case "aside": case "nav": case "header":
@@ -302,12 +309,12 @@ internal sealed class HtmlStyles
             case "dd": case "figure": case "figcaption": case "address": case "details": case "summary":
             case "table": case "thead": case "tbody": case "tfoot": case "tr": case "caption":
                 style.Display = HtmlDisplay.Block;
-                if (element.LocalName == "html") style.Background = Color.FromRgb(30, 30, 30);
+                if (element.LocalName == "html") style.Background = dark ? Color.FromRgb(30, 30, 30) : Color.FromRgb(255, 255, 255);
                 break;
             case "body":
                 style.Display = HtmlDisplay.Block;
                 style.Margin = new(new CssLength(8));
-                style.Background = Color.FromRgb(30, 30, 30);
+                style.Background = dark ? Color.FromRgb(30, 30, 30) : Color.FromRgb(255, 255, 255);
                 break;
             case "p": case "blockquote": case "pre":
                 style.Display = HtmlDisplay.Block;

@@ -163,7 +163,7 @@ public sealed class HtmlView : Panel
     protected override void OnThemeChanged(Theme oldTheme, Theme newTheme)
     {
         base.OnThemeChanged(oldTheme, newTheme);
-        if (oldTheme?.Metrics.FontFamily != newTheme.Metrics.FontFamily)
+        if (oldTheme?.Metrics.FontFamily != newTheme.Metrics.FontFamily || oldTheme?.IsDark != newTheme.IsDark)
         {
             ClearLayout();
             RefreshLayout();
@@ -175,7 +175,7 @@ public sealed class HtmlView : Panel
         base.OnRender(context);
         if (_window is not null && !Bounds.IsEmpty)
             // A page without an explicit CSS background uses the dark browser canvas.
-            context.FillRectangle(Bounds, Color.FromRgb(30, 30, 30));
+            context.FillRectangle(Bounds, Theme.IsDark ? Color.FromRgb(30, 30, 30) : Color.FromRgb(255, 255, 255));
     }
 
     protected override void RenderSubtree(IGraphicsContext context)
@@ -828,7 +828,8 @@ public sealed class HtmlView : Panel
             var height = Math.Max(0, size.Height - (horizontal ? ScrollBarWidth : 0));
             var layout = _layout.Get(Page.Document, Page.Version, width, MeasureText, viewportHeight: height,
                 externalStyleSheet: Page.GetExternalStyle, imageSize: MeasureImage,
-                focusedElement: _focusedElement, hoveredElement: _hoveredElement, activeElement: _pressedElement);
+                focusedElement: _focusedElement, hoveredElement: _hoveredElement, activeElement: _pressedElement,
+                dark: Theme.IsDark);
             var needVertical = NeedsBar(layout.ViewportY, layout.Height - height);
             var needHorizontal = NeedsBar(layout.ViewportX, layout.Width - width);
             if (needVertical && !vertical || needHorizontal && !horizontal)

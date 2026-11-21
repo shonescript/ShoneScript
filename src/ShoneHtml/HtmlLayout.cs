@@ -244,11 +244,12 @@ internal sealed class HtmlLayout
     private Func<IElement, string?>? _externalStyleSheet;
     private Func<IElement, Size?>? _imageSize;
     private IElement? _focused, _hovered, _active;
+    private bool _dark;
     private HtmlLayoutResult? _result;
 
     internal HtmlLayoutResult Get(IDocument document, long version, double width, Func<string, HtmlTextStyle, Size> measure,
         double viewportHeight = 0, Func<IElement, string?>? externalStyleSheet = null, Func<IElement, Size?>? imageSize = null,
-        IElement? focusedElement = null, IElement? hoveredElement = null, IElement? activeElement = null)
+        IElement? focusedElement = null, IElement? hoveredElement = null, IElement? activeElement = null, bool dark = true)
     {
         ArgumentNullException.ThrowIfNull(document);
         ArgumentNullException.ThrowIfNull(measure);
@@ -256,7 +257,7 @@ internal sealed class HtmlLayout
         viewportHeight = Nonnegative(viewportHeight);
         if (_result is not null && ReferenceEquals(_document, document) && _version == version && _width == width &&
             _height == viewportHeight && _measure == measure && _externalStyleSheet == externalStyleSheet && _imageSize == imageSize &&
-            ReferenceEquals(_focused, focusedElement) && ReferenceEquals(_hovered, hoveredElement) && ReferenceEquals(_active, activeElement))
+            ReferenceEquals(_focused, focusedElement) && ReferenceEquals(_hovered, hoveredElement) && ReferenceEquals(_active, activeElement) && _dark == dark)
             return _result;
 
         if (_measure != measure || !ReferenceEquals(_document, document))
@@ -272,7 +273,8 @@ internal sealed class HtmlLayout
         _externalStyleSheet = externalStyleSheet;
         _imageSize = imageSize;
         (_focused, _hovered, _active) = (focusedElement, hoveredElement, activeElement);
-        _styles.BeginLayout(width, viewportHeight, focusedElement, hoveredElement, activeElement);
+        _dark = dark;
+        _styles.BeginLayout(width, viewportHeight, focusedElement, hoveredElement, activeElement, dark);
         try
         {
             _result = new Builder(_styles, Measure, imageSize).Build(document, width, viewportHeight);
