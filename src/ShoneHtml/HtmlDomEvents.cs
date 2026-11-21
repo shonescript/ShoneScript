@@ -75,6 +75,9 @@ internal sealed partial class HtmlScriptHost
     private static DomEvent Event(JsValue value) => value.Data as DomEvent ?? throw TypeError("Expected an Event");
     private static bool Option(JsValue options, string name) => options.Data is JsObject obj && obj.Get(name).ToBoolean();
 
+    private void DispatchImageEvent(AngleSharp.Dom.IElement image, bool loaded) =>
+        Dispatch(GetWrapper(image), NewEvent(loaded ? "load" : "error", bubbles: false, cancelable: false));
+
     private bool DispatchHostEvent(JsObject target, DomEvent evt)
     {
         if (_page.Lifetime.IsCancellationRequested) return true;

@@ -17,11 +17,15 @@ public sealed class HtmlPageOptions
 public sealed record HtmlScriptError(string Source, Exception Exception);
 
 /// <summary>A parsed page and its JavaScript state. Access live pages on their owning thread.</summary>
-public sealed class HtmlPage : IDisposable
+public sealed partial class HtmlPage : IDisposable
 {
     private readonly CancellationTokenSource _lifetime;
     private readonly Dictionary<IElement, string> _styles = new(ReferenceEqualityComparer.Instance);
-    private readonly Dictionary<IElement, byte[]> _images = new(ReferenceEqualityComparer.Instance);
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<IElement, HtmlImage> _images = new();
+    private int _pageResourceCount;
+    private long _pageResourceBytes;
+    private long _pageImagePixels;
+    private const int MaximumPageImagePixels = 24_000_000;
     private Dictionary<IElement, HtmlRendererPixels>? _pixels;
     private Dictionary<IElement, int>? _rendererIds;
     private Dictionary<int, IElement>? _rendererElements;
@@ -66,7 +70,8 @@ public sealed class HtmlPage : IDisposable
     internal long Version { get; private set; }
     internal event Action? Changed;
     internal string? GetExternalStyle(IElement link) => _styles.GetValueOrDefault(link);
-    internal byte[]? GetImage(IElement image) => _images.GetValueOrDefault(image);
+    internal byte[]? GetImage(IElement image) => _images.TryGetValue(image, out var state) ? state.Bytes : null;
+    internal HtmlImage ImageState(IElement image) => _images.GetOrCreateValue(image);
     internal HtmlRendererPixels? GetPixels(IElement image) => _pixels?.GetValueOrDefault(image);
     internal int GetRendererId(IElement element)
     {
@@ -111,12 +116,13 @@ public sealed class HtmlPage : IDisposable
     {
         var mediaType = resource.ContentType?.Split(';', 2)[0].Trim().ToLowerInvariant();
         var imageResponse = mediaType?.StartsWith("image/", StringComparison.Ordinal) == true;
-        var supportedImage = imageResponse && publicScope is null && resource.IsSuccess && HtmlRaster.GetPixelCount(resource.Bytes) > 0;
+        var directImage = imageResponse && publicScope is null && resource.IsSuccess && resource.Bytes.Length <= options.MaximumPageResourceBytes
+            ? await Task.Run(() => HtmlImageDecoder.Decode(resource.Bytes, token), token) : null;
         var document = await Task.Run(() =>
         {
             var parser = new HtmlParser();
             if (imageResponse)
-                return parser.ParseDocument(supportedImage
+                return parser.ParseDocument(directImage is not null
                     ? "<!doctype html><title>Image</title><img alt='Image unavailable' style='display:block;max-width:100%;height:auto'>"
                     : "<!doctype html><title>Image unavailable</title><p>Unsupported or invalid image.</p>");
             var html = mediaType is null or "text/html" or "application/xhtml+xml";
@@ -129,8 +135,13 @@ public sealed class HtmlPage : IDisposable
             renderer is null ? default : token);
         try
         {
-            if (supportedImage)
-                page._images[document.QuerySelector("img")!] = resource.Bytes;
+            if (directImage is not null)
+            {
+                page._pageResourceCount = 1;
+                page._pageResourceBytes = resource.Bytes.Length;
+                page._pageImagePixels = (long)directImage.Width * directImage.Height;
+                page.ImageState(document.QuerySelector("img")!).Load(resource.Bytes, directImage, resource.Address.AbsoluteUri);
+            }
             else if (imageResponse)
                 page.ResourceStatus = "Unsupported or invalid image.";
             else if (resource.IsSuccess)
@@ -167,9 +178,7 @@ public sealed class HtmlPage : IDisposable
                 .Contains("stylesheet", StringComparer.OrdinalIgnoreCase) && !element.HasAttribute("disabled"));
         var candidates = assets.Take(options.MaximumPageResources).ToArray();
         var failures = assets.Skip(options.MaximumPageResources).Any() ? 1 : 0;
-        var retainedBytes = 0L;
-        var imagePixels = 0L;
-        const int maximumPageImagePixels = 24_000_000;
+        _pageResourceCount = candidates.Length;
         foreach (var group in candidates
             .Select(element =>
             {
@@ -188,10 +197,10 @@ public sealed class HtmlPage : IDisposable
                 try
                 {
                     token.ThrowIfCancellationRequested();
-                    if (reference is null || _publicScope is not null && kind == HtmlPublicRequestKind.Image)
+                    if (kind == HtmlPublicRequestKind.Image)
+                        return await LoadImageResourceAsync(reference, options.MaximumResponseBytes, token);
+                    if (reference is null)
                         return null;
-                    if (reference.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
-                        return DecodeEmbeddedImage(reference, options.MaximumResponseBytes);
                     if (RendererContext is { } renderer)
                         return await renderer.LoadAsync(new(kind, reference, "GET", null, null), token);
                     if (_publicScope is { } scope)
@@ -206,25 +215,19 @@ public sealed class HtmlPage : IDisposable
             for (var index = 0; index < group.Length; index++)
             {
                 var result = results[index];
-                if (result is not { IsSuccess: true } || retainedBytes + result.Bytes.Length > options.MaximumPageResourceBytes)
+                if (result is not { IsSuccess: true } || !CountResourceBytes(result.Bytes.Length, options.MaximumPageResourceBytes))
                 {
                     failures += group[index].Count();
                     continue;
                 }
-                retainedBytes += result.Bytes.Length;
-                var pixels = HtmlRaster.GetPixelCount(result.Bytes);
-                var showImage = pixels > 0 && imagePixels + pixels <= maximumPageImagePixels;
-                var imageAdded = false;
+                var image = group[index].Key.Kind == HtmlPublicRequestKind.Image ? DecodePageImage(result.Bytes, token) : null;
                 string? css = null;
                 foreach (var (element, _) in group[index])
                 {
                     if (element.LocalName == "img")
                     {
-                        if (showImage)
-                        {
-                            _images[element] = result.Bytes;
-                            imageAdded = true;
-                        }
+                        if (image is not null)
+                            ImageState(element).Load(result.Bytes, image, group[index].Key.Reference!);
                         else
                             failures++;
                     }
@@ -234,22 +237,57 @@ public sealed class HtmlPage : IDisposable
                     else
                         failures++;
                 }
-                if (imageAdded)
-                    imagePixels += pixels;
             }
         }
         if (failures > 0)
             ResourceStatus = $"{failures} page resource(s) unavailable.";
     }
 
-    private HtmlResource? DecodeEmbeddedImage(string reference, int limit)
+    internal bool ReserveImageRequest(int limit)
+    {
+        if (_pageResourceCount >= limit) return false;
+        _pageResourceCount++;
+        return true;
+    }
+
+    internal bool CountResourceBytes(int bytes, int limit)
+    {
+        if (_pageResourceBytes + bytes > limit) return false;
+        _pageResourceBytes += bytes;
+        return true;
+    }
+
+    internal HtmlRendererPixels? DecodePageImage(byte[] bytes, CancellationToken token)
+    {
+        var pixels = HtmlRaster.GetPixelCount(bytes);
+        if (pixels == 0 || _pageImagePixels + pixels > MaximumPageImagePixels) return null;
+        _pageImagePixels += pixels;
+        return HtmlImageDecoder.Decode(bytes, token);
+    }
+
+    internal async Task<HtmlResource?> LoadImageResourceAsync(string? reference, int limit, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        if (reference is null || _publicScope is not null) return null;
+        if (reference.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+            return DecodeEmbeddedImage(reference, limit);
+        if (RendererContext is { } renderer)
+            return reference.Length <= 8192
+                ? await renderer.LoadAsync(new(HtmlPublicRequestKind.Image, reference, "GET", null, null), token).ConfigureAwait(false)
+                : null;
+        return Browser is { } browser
+            ? await browser.Resources.LoadAsync(new Uri(reference), token).ConfigureAwait(false)
+            : null;
+    }
+
+    private static HtmlResource? DecodeEmbeddedImage(string reference, int limit)
     {
         var comma = reference.IndexOf(',');
         const string base64 = ";base64";
         if (comma < 5 + base64.Length || !reference.AsSpan(5, comma - 5).EndsWith(base64, StringComparison.OrdinalIgnoreCase))
             return null;
         var media = reference[5..(comma - base64.Length)].ToLowerInvariant();
-        if (media is not ("image/png" or "image/jpeg" or "image/gif" or "image/bmp"))
+        if (media is not ("image/png" or "image/jpeg" or "image/gif" or "image/bmp" or "image/webp"))
             return null;
         var payload = reference.AsSpan(comma + 1);
         if (payload.Length > ((long)limit + 2) / 3 * 4)
@@ -257,7 +295,7 @@ public sealed class HtmlPage : IDisposable
         var bytes = new byte[(int)((long)payload.Length / 4 * 3)];
         if (!Convert.TryFromBase64Chars(payload, bytes, out var written) || written > limit)
             return null;
-        return new HtmlResource(Address!, HttpStatusCode.OK, bytes.AsSpan(0, written).ToArray(), media,
+        return new HtmlResource(new Uri("about:blank"), HttpStatusCode.OK, bytes.AsSpan(0, written).ToArray(), media,
             new Dictionary<string, string>(), false);
     }
 

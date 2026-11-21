@@ -32,6 +32,12 @@ public static class TypedArrayBuiltins
         public int ByteOffset { get; }
         public Kind ElementKind { get; }
         public int BytesPerElement => Size(ElementKind);
+
+        /// <summary>Returns the mutable byte window of a clamped byte view for native interop.</summary>
+        public Span<byte> GetClampedBytes() => ElementKind == Kind.Uint8Clamped
+            ? Buffer.Bytes.AsSpan(ByteOffset, Length)
+            : throw new InvalidOperationException("Expected a clamped byte view");
+
         public override PropertyDescriptor? GetOwnProperty(string key)
         {
             if (key == "length") return PropertyDescriptor.Data(JsValue.From((double)Length));
@@ -102,6 +108,14 @@ public static class TypedArrayBuiltins
 
     public enum Kind { Int8, Uint8, Uint8Clamped, Int16, Uint16, Int32, Uint32, Float32, Float64, BigInt64, BigUint64 }
     private static int Size(Kind kind) => kind switch { Kind.Int8 or Kind.Uint8 or Kind.Uint8Clamped => 1, Kind.Int16 or Kind.Uint16 => 2, Kind.Int32 or Kind.Uint32 or Kind.Float32 => 4, _ => 8 };
+
+    /// <summary>Creates zero-initialized clamped byte storage for a native host object.</summary>
+    public static ViewObject CreateClampedBytes(int length, JsObject viewPrototype, JsObject bufferPrototype)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(length);
+        var buffer = new BufferObject(length) { Prototype = bufferPrototype };
+        return new ViewObject(buffer, length, Kind.Uint8Clamped, viewPrototype);
+    }
 
     public static JsObject Install(Action<string, JsValue> setGlobal, JsObject objectPrototype)
     {

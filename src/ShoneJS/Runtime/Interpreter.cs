@@ -160,9 +160,10 @@ public sealed partial class Interpreter
         if (_executionDepth > 0 && _remainingSteps-- <= 0) throw new InvalidOperationException("Execution step limit exceeded");
     }
 
-    // Some native methods can do large amounts of work without evaluating an AST node.
-    internal static void ChargeNativeWork(long work = 1)
+    /// <summary>Charges work performed by a native callback to the active script execution budget.</summary>
+    public static void ChargeNativeWork(long work = 1)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(work);
         if (_executingInterpreter is not { } engine) return;
         engine.CheckCancellation();
         if (work > engine._remainingSteps) throw new InvalidOperationException("Execution step limit exceeded");

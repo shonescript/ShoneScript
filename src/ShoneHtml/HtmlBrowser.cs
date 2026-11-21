@@ -31,7 +31,7 @@ public sealed class HtmlBrowserOptions
 public sealed class HtmlBrowser : IDisposable
 {
     private sealed record Navigation(Uri Address, HttpMethod Method, byte[]? Body = null, string? EncodedQuery = null);
-    private sealed record Entry(Navigation Request, Uri Address, long DocumentId, double Scroll, object? State = null);
+    private sealed record Entry(Navigation Request, Uri Address, long DocumentId, double ScrollX, double Scroll, object? State = null);
     private readonly List<Entry> _history = [];
     private readonly BrowserContext? _ownedContext;
     private readonly HtmlPublicNetwork? _publicNetwork;
@@ -69,6 +69,7 @@ public sealed class HtmlBrowser : IDisposable
     public bool CanGoForward => _index + 1 < _history.Count;
     public bool IsLoading { get; private set; }
     public string Status { get; private set; } = "";
+    public double ScrollOffsetX { get; private set; }
     public double ScrollOffset { get; private set; }
     public string? ScrollFragment { get; private set; }
     public long NavigationVersion { get; private set; }
@@ -110,13 +111,18 @@ public sealed class HtmlBrowser : IDisposable
     public Task RefreshAsync() => RunAsync(() => _index < 0 ? Task.CompletedTask :
         NavigateCoreAsync(_history[_index].Request, _index, allowFragment: false));
 
-    public void UpdateScroll(double offset) => Run(() =>
+    public void UpdateScroll(double offset) => Run(() => StoreScroll(ScrollOffsetX, offset));
+
+    public void UpdateScroll(double x, double y) => Run(() => StoreScroll(x, y));
+
+    private void StoreScroll(double x, double y)
     {
-        if (_index < 0 || !double.IsFinite(offset))
+        if (_index < 0 || !double.IsFinite(x) || !double.IsFinite(y))
             return;
-        ScrollOffset = Math.Max(0, offset);
-        _history[_index] = _history[_index] with { Scroll = ScrollOffset };
-    });
+        ScrollOffsetX = Math.Max(0, x);
+        ScrollOffset = Math.Max(0, y);
+        _history[_index] = _history[_index] with { ScrollX = ScrollOffsetX, Scroll = ScrollOffset };
+    }
 
     public void Stop() => Run(() =>
     {
@@ -134,7 +140,7 @@ public sealed class HtmlBrowser : IDisposable
         if (Page != page || page.Lifetime.IsCancellationRequested || _index < 0 || !HtmlResources.IsHttpAddress(uri) ||
             !HtmlResources.SameOrigin(page.Address!, uri))
             throw new InvalidOperationException("History URLs must be in the active document's origin.");
-        var entry = new Entry(new(uri, HttpMethod.Get), uri, _documentId, ScrollOffset, state);
+        var entry = new Entry(new(uri, HttpMethod.Get), uri, _documentId, ScrollOffsetX, ScrollOffset, state);
         if (replace)
             _history[_index] = entry;
         else
@@ -152,7 +158,7 @@ public sealed class HtmlBrowser : IDisposable
             _navigation?.Cancel();
             _index = target;
             page.Address = entry.Address;
-            SetViewport(entry.Scroll, null);
+            SetViewport(entry.ScrollX, entry.Scroll, null);
             Status = DocumentStatus(page);
             IsLoading = false;
             Changed?.Invoke();
@@ -179,13 +185,13 @@ public sealed class HtmlBrowser : IDisposable
             current.AbsoluteUri != request.Address.AbsoluteUri &&
             HtmlResources.WithoutFragment(current).AbsoluteUri == HtmlResources.WithoutFragment(request.Address).AbsoluteUri)
         {
-            var entry = new Entry(request, request.Address, _documentId, 0);
+            var entry = new Entry(request, request.Address, _documentId, 0, 0);
             if (replace && _index >= 0)
                 _history[_index] = entry;
             else
                 Push(entry);
             page.Address = request.Address;
-            SetViewport(0, GetFragment(request.Address));
+            SetViewport(0, 0, GetFragment(request.Address));
             Status = DocumentStatus(page);
             IsLoading = false;
             Changed?.Invoke();
@@ -240,7 +246,7 @@ public sealed class HtmlBrowser : IDisposable
             if (existingIndex < 0)
             {
                 _documentId = ++_nextDocumentId;
-                var entry = new Entry(request, resource.Address, _documentId, 0);
+                var entry = new Entry(request, resource.Address, _documentId, 0, 0);
                 if (replace && _index >= 0)
                     _history[_index] = entry;
                 else
@@ -253,7 +259,8 @@ public sealed class HtmlBrowser : IDisposable
                 _documentId = entry.DocumentId;
                 _history[_index] = entry with { Address = resource.Address };
             }
-            SetViewport(existingIndex < 0 ? 0 : _history[_index].Scroll,
+            SetViewport(existingIndex < 0 ? 0 : _history[_index].ScrollX,
+                existingIndex < 0 ? 0 : _history[_index].Scroll,
                 existingIndex < 0 ? GetFragment(resource.Address) : null);
             Status = resource.IsSuccess ? DocumentStatus(Page) : $"HTTP {(int)resource.Status} {resource.Status}";
             Changed?.Invoke();
@@ -371,9 +378,10 @@ public sealed class HtmlBrowser : IDisposable
         _index = _history.Count - 1;
     }
 
-    private void SetViewport(double offset, string? fragment)
+    private void SetViewport(double x, double y, string? fragment)
     {
-        ScrollOffset = offset;
+        ScrollOffsetX = x;
+        ScrollOffset = y;
         ScrollFragment = fragment;
         NavigationVersion++;
     }

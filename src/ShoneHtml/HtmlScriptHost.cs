@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using AngleSharp.Dom;
+using AngleSharp.Html.Dom;
 using ShoneJs;
 using ShoneJs.Parsing;
 using ShoneJs.Runtime;
@@ -30,6 +31,8 @@ internal sealed partial class HtmlScriptHost : IDisposable
     private readonly JsObject _nodePrototype;
     private readonly JsObject _elementPrototype;
     private readonly JsObject _documentPrototype;
+    private readonly JsObject _imagePrototype;
+    private readonly JsObject _canvasPrototype;
 
     public HtmlScriptHost(HtmlPage page, HtmlPageOptions options)
     {
@@ -48,9 +51,12 @@ internal sealed partial class HtmlScriptHost : IDisposable
         _nodePrototype = new JsObject { Prototype = objectPrototype };
         _elementPrototype = new JsObject { Prototype = _nodePrototype };
         _documentPrototype = new JsObject { Prototype = _nodePrototype };
+        _imagePrototype = new JsObject { Prototype = _elementPrototype };
         _window = (JsObject)_engine.GetGlobal("globalThis").Data!;
         BindNode();
         BindElement();
+        _canvasPrototype = new JsObject { Prototype = _elementPrototype };
+        BindCanvas();
         BindDocument();
         BindDomProperties();
         BindListeners(_window);
@@ -182,6 +188,7 @@ internal sealed partial class HtmlScriptHost : IDisposable
 
     private void BindElement()
     {
+        Constructor("Element", 0, _ => throw TypeError("Illegal constructor"), _elementPrototype);
         Accessor(_elementPrototype, "tagName", receiver => JsValue.From(Element(receiver).TagName));
         AttributeProperty("id", "id");
         AttributeProperty("className", "class");
@@ -196,13 +203,26 @@ internal sealed partial class HtmlScriptHost : IDisposable
                 CheckDomText(name, "Attribute name");
                 CheckDomText(value, "Attribute value");
             }
-            Element(receiver).SetAttribute(name, value);
+            var element = Element(receiver);
+            element.SetAttribute(name, value);
+            ResetCanvasDimension(element, name);
+            if (element is IHtmlImageElement image && name.Equals("src", StringComparison.OrdinalIgnoreCase))
+                UpdateImageSource(image);
             _page.MarkDirty();
             return JsValue.Undefined;
         });
         Method(_elementPrototype, "removeAttribute", 1, (receiver, args) =>
         {
-            Element(receiver).RemoveAttribute(Arg(args, 0).ToJsString());
+            var element = Element(receiver);
+            var name = Arg(args, 0).ToJsString();
+            var existed = element.HasAttribute(name);
+            element.RemoveAttribute(name);
+            if (existed)
+            {
+                ResetCanvasDimension(element, name);
+                if (element is IHtmlImageElement image && name.Equals("src", StringComparison.OrdinalIgnoreCase))
+                    UpdateImageSource(image);
+            }
             _page.MarkDirty();
             return JsValue.Undefined;
         });
@@ -289,6 +309,8 @@ internal sealed partial class HtmlScriptHost : IDisposable
         Prototype = node switch
         {
             IDocument => _documentPrototype,
+            IElement element when HtmlCanvas.IsCanvas(element) => _canvasPrototype,
+            IHtmlImageElement => _imagePrototype,
             IElement => _elementPrototype,
             _ => _nodePrototype
         }

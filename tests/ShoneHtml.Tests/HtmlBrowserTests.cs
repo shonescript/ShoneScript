@@ -30,6 +30,40 @@ public sealed class HtmlBrowserTests
         Assert.False(browser.IsLoading);
         Assert.Equal(0, requests);
     }
+
+    [Fact]
+    public async Task LoadsWebpFromNavigationMarkupAndDataUrls()
+    {
+        var bytes = Convert.FromBase64String(HtmlRasterTests.Webp);
+        var requests = 0;
+        await using var server = new BrowserHttpFixture(request => request.Target switch
+        {
+            "/" => Response.Text($"<img src='pixel.webp'><img src='data:image/webp;base64,{HtmlRasterTests.Webp}'>"),
+            "/pixel.webp" => Webp(),
+            _ => new("image/webp", bytes[..^1])
+        });
+        using var browser = new HtmlBrowser(StaticFixture);
+        await browser.NavigateAsync(server.Root);
+        Assert.Equal(2, browser.Page!.Document.QuerySelectorAll("img").Length);
+        foreach (var image in browser.Page.Document.QuerySelectorAll("img"))
+            Assert.Equal(bytes, browser.Page.GetImage(image));
+        Assert.Equal(1, requests);
+
+        await browser.NavigateAsync(server.Address("pixel.webp"));
+        Assert.Equal(bytes, browser.Page!.GetImage(Assert.Single(browser.Page.Document.QuerySelectorAll("img"))));
+        Assert.Equal(2, requests);
+
+        await browser.NavigateAsync(server.Address("broken.webp"));
+        Assert.Contains("Unsupported or invalid image", browser.Status);
+        Assert.Null(browser.Page!.Document.QuerySelector("img"));
+
+        Response Webp()
+        {
+            Interlocked.Increment(ref requests);
+            return new("image/webp", bytes);
+        }
+    }
+
     private static readonly byte[] Pixel = Convert.FromBase64String(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aX1sAAAAASUVORK5CYII=");
 
@@ -118,26 +152,33 @@ public sealed class HtmlBrowserTests
         using var browser = new HtmlBrowser(StaticFixture);
         await browser.NavigateAsync(server.Address("one"));
         var first = browser.Page!;
+        browser.UpdateScroll(46.5, 120);
         browser.UpdateScroll(123.5);
         await first.ActivateAsync(first.Document.QuerySelector("a")!);
         Assert.Same(first, browser.Page);
         Assert.Equal(1, requests);
         Assert.Equal("here", browser.ScrollFragment);
-        browser.UpdateScroll(275);
+        Assert.Equal(0, browser.ScrollOffsetX);
+        browser.UpdateScroll(149, 275);
+        browser.UpdateScroll(double.NaN, 300);
         await browser.GoBackAsync();
+        Assert.Equal(46.5, browser.ScrollOffsetX);
         Assert.Equal(123.5, browser.ScrollOffset);
         Assert.Equal("", browser.Address!.Fragment);
         await browser.GoForwardAsync();
+        Assert.Equal(149, browser.ScrollOffsetX);
         Assert.Equal(275, browser.ScrollOffset);
         await browser.RefreshAsync();
         Assert.Equal(2, requests);
         Assert.NotSame(first, browser.Page);
+        Assert.Equal(149, browser.ScrollOffsetX);
         Assert.Equal(275, browser.ScrollOffset);
         await browser.GoBackAsync();
         await browser.NavigateAsync(server.Address("other"));
         Assert.False(browser.CanGoForward);
         await browser.GoBackAsync();
         Assert.Equal(server.Address("one"), browser.Address);
+        Assert.Equal(46.5, browser.ScrollOffsetX);
         Assert.Equal(123.5, browser.ScrollOffset);
     }
 

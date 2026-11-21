@@ -8,6 +8,7 @@
     <ProjectReference Include="../ShoneJS/ShoneJS.csproj" />
     <PackageReference Include="AngleSharp" Version="1.10.5" />
     <PackageReference Include="Aprillz.MewUI.Core" Version="0.22.1" />
+    <PackageReference Include="Sdcb.SimdCodecs.Webp" Version="2.0.0" />
     <InternalsVisibleTo Include="ShoneHtml.Tests" />
     <InternalsVisibleTo Include="ShoneHtml.Worker" />
     <InternalsVisibleTo Include="ShoneDemo" />

@@ -11,7 +11,105 @@ namespace ShoneHtml;
 
 internal readonly record struct HtmlDrawItem(Rect Bounds, IElement Element, Color? Background,
     Color BorderColor, double BorderWidth, string? Text, HtmlTextStyle TextStyle,
-    Rect? ImageBounds = null, Rect? ControlBounds = null, bool Fixed = false);
+    Rect? ImageBounds = null, Rect? ControlBounds = null, bool Fixed = false, HtmlScrollRegion? ScrollParent = null);
+
+internal sealed class HtmlScrollRegion(int index, IElement element, Rect port, HtmlOverflow x, HtmlOverflow y,
+    HtmlScrollRegion? parent, bool fixedPosition)
+{
+    internal int Index { get; } = index;
+    internal IElement Element { get; } = element;
+    internal Rect Port { get; } = port;
+    internal HtmlOverflow X { get; } = x;
+    internal HtmlOverflow Y { get; } = y;
+    internal HtmlScrollRegion? Parent { get; } = parent;
+    internal bool Fixed { get; } = fixedPosition;
+    internal Rect? VerticalCull { get; } = parent?.VerticalCull ?? (y == HtmlOverflow.Visible ? null : port);
+    internal double MaxX { get; private set; }
+    internal double MaxY { get; private set; }
+
+    internal void SetExtent(double right, double bottom)
+    {
+        MaxX = X is HtmlOverflow.Visible or HtmlOverflow.Clip ? 0 : Math.Max(0, right - Port.Right);
+        MaxY = Y is HtmlOverflow.Visible or HtmlOverflow.Clip ? 0 : Math.Max(0, bottom - Port.Bottom);
+    }
+
+    internal Point Clamp(Point offset) => new(Math.Clamp(offset.X, 0, MaxX), Math.Clamp(offset.Y, 0, MaxY));
+    internal bool UserX => X is HtmlOverflow.Auto or HtmlOverflow.Scroll;
+    internal bool UserY => Y is HtmlOverflow.Auto or HtmlOverflow.Scroll;
+    internal bool BarX => X == HtmlOverflow.Scroll || UserX && MaxX > 0;
+    internal bool BarY => Y == HtmlOverflow.Scroll || UserY && MaxY > 0;
+}
+
+// A projection of the layout for one set of offsets. Painting, hit testing and native controls
+// all share its transforms and clips. Parent indices precede child indices in paint order.
+internal sealed class HtmlScrollFrame
+{
+    private readonly HtmlLayoutResult _layout;
+    private readonly RegionFrame[] _regions;
+    private readonly Point _offset;
+    private readonly Rect _viewport;
+
+    internal HtmlScrollFrame(HtmlLayoutResult layout, Rect viewport, Point offset, Func<IElement, Point>? elementOffset = null)
+    {
+        _layout = layout;
+        _viewport = viewport;
+        _offset = offset;
+        _regions = new RegionFrame[layout.ScrollRegions.Count];
+        foreach (var region in layout.ScrollRegions)
+        {
+            var (translation, parentClip) = ContentSpace(region.Parent, region.Fixed);
+            var port = region.Port.Offset(translation.X, translation.Y);
+            var clip = Intersect(parentClip, port, region.X != HtmlOverflow.Visible, region.Y != HtmlOverflow.Visible);
+            var scroll = region.Clamp(elementOffset?.Invoke(region.Element) ?? default);
+            _regions[region.Index] = new(port, parentClip, clip, new(translation.X - scroll.X, translation.Y - scroll.Y));
+        }
+    }
+
+    internal (Rect Port, Rect Clip) RegionBounds(HtmlScrollRegion region)
+    {
+        var state = _regions[region.Index];
+        return (state.Port, state.ParentClip);
+    }
+
+    internal (Rect Bounds, Rect Clip) Place(HtmlDrawItem item, Rect? bounds = null)
+    {
+        var (translate, clip) = ContentSpace(item.ScrollParent, item.Fixed);
+        return ((bounds ?? item.Bounds).Offset(translate.X, translate.Y), clip);
+    }
+
+    internal IEnumerable<HtmlDrawItem> VisibleItems()
+    {
+        foreach (var item in _layout.GetVisibleItems(_offset.Y, _offset.Y + _viewport.Height, _offset.Y))
+        {
+            var (bounds, clip) = Place(item);
+            if (!Intersect(bounds, clip).IsEmpty) yield return item;
+        }
+    }
+
+    internal HtmlDrawItem? HitTest(Point point) => _viewport.Contains(point)
+        ? _layout.HitTestFrame(point, _offset.Y, this) : null;
+
+    internal bool Contains(HtmlDrawItem item, Point point)
+    {
+        var (bounds, clip) = Place(item);
+        return !clip.IsEmpty && clip.Contains(point) && bounds.Contains(point);
+    }
+
+    internal static Rect Intersect(Rect a, Rect b, bool x = true, bool y = true)
+    {
+        var left = x ? Math.Max(a.Left, b.Left) : a.Left;
+        var top = y ? Math.Max(a.Top, b.Top) : a.Top;
+        var right = x ? Math.Min(a.Right, b.Right) : a.Right;
+        var bottom = y ? Math.Min(a.Bottom, b.Bottom) : a.Bottom;
+        return right > left && bottom > top ? new(left, top, right - left, bottom - top) : default;
+    }
+
+    private (Point Translation, Rect Clip) ContentSpace(HtmlScrollRegion? parent, bool fixedPosition) =>
+        parent is { } region ? (_regions[region.Index].Translation, _regions[region.Index].Clip) :
+        (fixedPosition ? default : new(-_offset.X, -_offset.Y), _viewport);
+
+    private readonly record struct RegionFrame(Rect Port, Rect ParentClip, Rect Clip, Point Translation);
+}
 
 internal sealed class HtmlLayoutResult
 {
@@ -21,10 +119,16 @@ internal sealed class HtmlLayoutResult
     private readonly VerticalRange[] _ranges;
     private readonly int _leaves;
 
-    internal HtmlLayoutResult(double height, HtmlDrawItem[] items)
+    internal HtmlLayoutResult(double width, double height, HtmlDrawItem[] items, HtmlScrollRegion[] scrollRegions,
+        HtmlOverflow viewportX = HtmlOverflow.Auto, HtmlOverflow viewportY = HtmlOverflow.Auto)
     {
+        Width = width;
         Height = height;
+        ViewportX = viewportX;
+        ViewportY = viewportY;
         _items = items;
+        ScrollRegions = scrollRegions;
+        RegionsByElement = scrollRegions.ToDictionary(region => region.Element, region => region, (IEqualityComparer<IElement>)ReferenceEqualityComparer.Instance);
         _flowCount = Array.FindIndex(items, static item => item.Fixed);
         if (_flowCount < 0) _flowCount = items.Length;
         var batches = (_flowCount + BatchSize - 1) / BatchSize;
@@ -36,15 +140,22 @@ internal sealed class HtmlLayoutResult
         for (var i = 0; i < _flowCount; i++)
         {
             var index = _leaves + i / BatchSize;
-            var bounds = items[i].Bounds;
+            var bounds = CullBounds(items[i]);
             _ranges[index] = _ranges[index].Include(new(bounds.Top, bounds.Bottom));
         }
         for (var i = _leaves - 1; i > 0; i--)
             _ranges[i] = _ranges[i * 2].Include(_ranges[i * 2 + 1]);
     }
 
+    internal double Width { get; }
     internal double Height { get; }
+    internal HtmlOverflow ViewportX { get; }
+    internal HtmlOverflow ViewportY { get; }
     internal IReadOnlyList<HtmlDrawItem> Items => _items;
+    internal IReadOnlyList<HtmlScrollRegion> ScrollRegions { get; }
+    internal IReadOnlyDictionary<IElement, HtmlScrollRegion> RegionsByElement { get; }
+
+    private static Rect CullBounds(HtmlDrawItem item) => item.ScrollParent?.VerticalCull ?? item.Bounds;
 
     // Keep paint order while skipping batches outside the viewport.
     internal IEnumerable<HtmlDrawItem> GetVisibleItems(double top, double bottom, double scrollOffset = 0)
@@ -52,7 +163,7 @@ internal sealed class HtmlLayoutResult
         if (!(top < bottom)) yield break;
         foreach (var item in GetVisibleFlowItems(top, bottom)) yield return item;
         for (var i = _flowCount; i < _items.Length; i++)
-            if (_items[i].Bounds.Bottom > top - scrollOffset && _items[i].Bounds.Top < bottom - scrollOffset)
+            if (CullBounds(_items[i]) is var bounds && bounds.Bottom > top - scrollOffset && bounds.Top < bottom - scrollOffset)
                 yield return _items[i];
     }
 
@@ -75,7 +186,8 @@ internal sealed class HtmlLayoutResult
             for (var i = start; i < end; i++)
             {
                 var item = _items[i];
-                if (item.Bounds.Bottom > top && item.Bounds.Top < bottom)
+                var bounds = CullBounds(item);
+                if (bounds.Bottom > top && bounds.Top < bottom)
                     yield return item;
             }
         }
@@ -83,25 +195,30 @@ internal sealed class HtmlLayoutResult
 
     internal IElement? HitTest(double x, double y, double scrollOffset = 0)
     {
-        for (var i = _items.Length - 1; i >= _flowCount; i--)
-            if (Contains(_items[i].Bounds, x, y - scrollOffset)) return _items[i].Element;
-        return Hit(1, x, y);
+        var frame = new HtmlScrollFrame(this, new(-double.MaxValue / 2, -double.MaxValue / 2, double.MaxValue, double.MaxValue),
+            new(0, scrollOffset));
+        return frame.HitTest(new(x, y - scrollOffset))?.Element;
     }
 
-    private static bool Contains(Rect bounds, double x, double y) => x >= bounds.Left && x < bounds.Right && y >= bounds.Top && y < bounds.Bottom;
+    internal HtmlDrawItem? HitTestFrame(Point point, double offsetY, HtmlScrollFrame frame)
+    {
+        for (var i = _items.Length - 1; i >= _flowCount; i--)
+            if (frame.Contains(_items[i], point)) return _items[i];
+        return Hit(1, point.Y + offsetY, point, frame);
+    }
 
-    private IElement? Hit(int index, double x, double y)
+    private HtmlDrawItem? Hit(int index, double y, Point point, HtmlScrollFrame frame)
     {
         if (!(_ranges[index].Top <= y && y < _ranges[index].Bottom))
             return null;
         if (index < _leaves)
-            return Hit(index * 2 + 1, x, y) ?? Hit(index * 2, x, y);
+            return Hit(index * 2 + 1, y, point, frame) ?? Hit(index * 2, y, point, frame);
         var start = (index - _leaves) * BatchSize;
         var end = Math.Min(start + BatchSize, _flowCount);
         for (var i = end - 1; i >= start; i--)
         {
             var item = _items[i];
-            if (Contains(item.Bounds, x, y)) return item.Element;
+            if (frame.Contains(item, point)) return item;
         }
         return null;
     }
@@ -206,26 +323,49 @@ internal sealed class HtmlLayout
         private PositionContext _fixed = null!;
         private int _specialDepth;
         private bool _probing;
+        private IElement? _viewportOverflowSource;
 
         internal HtmlLayoutResult Build(IDocument document, double width, double viewportHeight)
         {
             if (document.DocumentElement is not { } root)
-                return new(0, []);
+                return new(0, 0, [], []);
 
             var plane = new Plane();
             var initial = new PositionContext(plane);
             _fixed = new(new Plane());
             var defaults = new HtmlStyle(HtmlTextStyle.Default);
             var viewport = new Flow(this, plane, 0, 0, width, null, defaults, initial);
+            var rootStyle = styles.Compute(root, defaults, _rootFont);
+            _viewportOverflowSource = root;
+            var (viewportX, viewportY) = (rootStyle.OverflowX, rootStyle.OverflowY);
+            if (root.LocalName == "html" && viewportX == HtmlOverflow.Visible && viewportY == HtmlOverflow.Visible &&
+                document.Body is { LocalName: "body" } body)
+            {
+                var bodyStyle = styles.Compute(body, rootStyle, rootStyle.Text.FontSize);
+                if (bodyStyle.Display != HtmlDisplay.None)
+                {
+                    (viewportX, viewportY) = (bodyStyle.OverflowX, bodyStyle.OverflowY);
+                    _viewportOverflowSource = body;
+                }
+            }
             Walk(root, defaults, viewport, isRoot: true);
             viewport.FlushLine();
             var viewportBox = new Rect(0, 0, width, viewportHeight);
             PlacePositioned(initial, viewportBox);
             PlacePositioned(_fixed, viewportBox);
             List<HtmlDrawItem> result = [];
-            var height = Flatten(plane, result, Math.Max(0, viewport.Y), false);
-            Flatten(_fixed.Plane, result, 0, true);
-            return new(height, [.. result]);
+            List<HtmlScrollRegion> regions = [];
+            var extent = Flatten(plane, result, regions, false);
+            Flatten(_fixed.Plane, result, regions, true);
+            return new(Math.Max(width, extent.X), Math.Max(viewport.Y, extent.Y), [.. result], [.. regions],
+                ViewportOverflow(viewportX), ViewportOverflow(viewportY));
+
+            static HtmlOverflow ViewportOverflow(HtmlOverflow overflow) => overflow switch
+            {
+                HtmlOverflow.Visible => HtmlOverflow.Auto,
+                HtmlOverflow.Clip => HtmlOverflow.Hidden,
+                _ => overflow
+            };
         }
 
         private void Walk(IElement root, in HtmlStyle parent, Flow flow, bool isRoot = false, HtmlStyle? rootStyle = null,
@@ -249,35 +389,75 @@ internal sealed class HtmlLayout
             }
         }
 
-        private static double Flatten(Plane plane, List<HtmlDrawItem> result, double height, bool fixedPosition)
+        private static Point Flatten(Plane plane, List<HtmlDrawItem> result, List<HtmlScrollRegion> regions, bool fixedPosition)
         {
             var pending = new Stack<PaintFrame>();
-            pending.Push(new(plane.PaintItems, 0, 0, 0));
+            pending.Push(Open(plane, 0, 0, null));
+            Point extent = default;
             while (pending.TryPop(out var current))
             {
-                for (var i = current.Next; i < current.Items.Count; i++)
+                if (current.Next == current.Items.Count)
                 {
-                    var entry = current.Items[i];
-                    if (entry.Nested is { } nested)
+                    if (current.Region is { } region)
                     {
-                        pending.Push(current with { Next = i + 1 });
-                        pending.Push(new(nested.PaintItems, 0, current.X + nested.X, current.Y + nested.Y));
-                        break;
+                        region.SetExtent(Math.Max(current.Right, current.X + current.Scroll.IntrinsicRight),
+                            Math.Max(current.Bottom, current.Y + current.Scroll.IntrinsicBottom));
+                        var box = current.Items[0].Item.Bounds.Offset(current.X, current.Y);
+                        current.Right = region.X == HtmlOverflow.Visible ? Math.Max(box.Right, current.Right) : box.Right;
+                        current.Bottom = region.Y == HtmlOverflow.Visible ? Math.Max(box.Bottom, current.Bottom) : box.Bottom;
                     }
-                    var bounds = entry.Item.Bounds;
-                    if (!(bounds.Width > 0 && bounds.Height > 0))
-                        continue;
-                    var moved = bounds.Offset(current.X, current.Y);
+                    if (pending.TryPop(out var parent))
+                    {
+                        parent.Include(current.Right, current.Bottom);
+                        pending.Push(parent);
+                    }
+                    else extent = new(current.Right, current.Bottom);
+                    continue;
+                }
+
+                var entry = current.Items[current.Next++];
+                var clip = current.Region ?? current.Parent;
+                if (entry.Nested is { } nested)
+                {
+                    pending.Push(current);
+                    pending.Push(Open(nested, current.X, current.Y, clip));
+                    continue;
+                }
+                var bounds = entry.Item.Bounds;
+                var moved = bounds.Offset(current.X, current.Y);
+                var ownScrollBox = current.Next == 1 && current.Region is not null;
+                if (bounds.Width > 0 && bounds.Height > 0)
+                {
                     result.Add(entry.Item with
                     {
-                        Bounds = moved, Fixed = fixedPosition,
+                        Bounds = moved, Fixed = fixedPosition, ScrollParent = ownScrollBox ? current.Parent : clip,
                         ImageBounds = entry.Item.ImageBounds?.Offset(current.X, current.Y),
                         ControlBounds = entry.Item.ControlBounds?.Offset(current.X, current.Y)
                     });
-                    height = Math.Max(height, moved.Bottom);
                 }
+                current.Include(ownScrollBox ? current.Region!.Port.Right : moved.Right,
+                    ownScrollBox ? current.Region!.Port.Bottom : moved.Bottom);
+                pending.Push(current);
             }
-            return height;
+            return extent;
+
+            PaintFrame Open(Plane nested, double parentX, double parentY, HtmlScrollRegion? parent)
+            {
+                var x = parentX + nested.X;
+                var y = parentY + nested.Y;
+                HtmlScrollRegion? region = null;
+                if (nested.Scroll is { } scroll)
+                {
+                    var item = nested.Items[0].Item;
+                    var box = item.Bounds.Offset(x, y);
+                    var border = item.BorderWidth;
+                    var port = new Rect(box.X + border, box.Y + border,
+                        Math.Max(0, box.Width - 2 * border), Math.Max(0, box.Height - 2 * border));
+                    region = new(regions.Count, item.Element, port, scroll.X, scroll.Y, parent, fixedPosition);
+                    regions.Add(region);
+                }
+                return new(nested.PaintItems, x, y, parent, region, nested.Scroll ?? default);
+            }
         }
 
         private bool Enter(IElement element, in HtmlStyle parent, Flow flow, out Frame frame, bool isRoot = false,
@@ -322,7 +502,8 @@ internal sealed class HtmlLayout
             }
 
             var isAtomic = style.Display is HtmlDisplay.Inline or HtmlDisplay.InlineBlock or HtmlDisplay.InlineFlex or HtmlDisplay.InlineGrid;
-            var isolated = isAtomic || style.Position != HtmlPosition.Static;
+            var scrolls = HasOverflowBox(element, style);
+            var isolated = isAtomic || style.Position != HtmlPosition.Static || scrolls;
             if (!isAtomic) flow.FlushLine();
             var contentPlane = isolated ? new Plane() : flow.Plane;
             var available = Math.Max(0, flow.Width - margin.Horizontal);
@@ -428,6 +609,13 @@ internal sealed class HtmlLayout
                 ? Math.Min(frame.Box.Width, Limit(content.MaxUsedWidth, style.MinWidth, style.MaxWidth, flow.Width, font, style.BorderBox,
                     frame.Insets.Horizontal) + frame.Insets.Horizontal) : frame.Box.Width;
             SetBounds(content.Plane, frame.Item, new(frame.Box.X, frame.Box.Y, width, outerHeight));
+            if (HasOverflowBox(frame.Element, style))
+            {
+                // An overflow plane owns the shell and all flow descendants, but not viewport-fixed descendants.
+                content.Plane.Scroll = new(style.OverflowX, style.OverflowY,
+                    content.X + content.MaxUsedWidth + frame.Insets.Right - frame.Border,
+                    content.Y + frame.Insets.Bottom - frame.Border);
+            }
             if (style.Position != HtmlPosition.Static)
                 PlacePositioned(content.Position, new(frame.Box.X + frame.Border, frame.Box.Y + frame.Border,
                     Math.Max(0, width - frame.Border * 2), Math.Max(0, outerHeight - frame.Border * 2)));
@@ -452,9 +640,13 @@ internal sealed class HtmlLayout
                 }
                 flow.Y = (frame.Isolated ? flow.Y + frame.Margin.Top : frame.Box.Y) + outerHeight + frame.Margin.Bottom;
                 flow.MaxUsedWidth = Math.Max(flow.MaxUsedWidth, Math.Max(width + frame.Margin.Horizontal,
-                    content.MaxUsedWidth + frame.Insets.Horizontal + frame.Margin.Left));
+                    (content.Plane.Scroll is { X: not HtmlOverflow.Visible } ? 0 : content.MaxUsedWidth) +
+                    frame.Insets.Horizontal + frame.Margin.Left));
             }
         }
+
+        private bool HasOverflowBox(IElement element, in HtmlStyle style) => !ReferenceEquals(element, _viewportOverflowSource) &&
+            (style.OverflowX != HtmlOverflow.Visible || style.OverflowY != HtmlOverflow.Visible);
 
         private static bool IsContainer(HtmlDisplay display) => display is HtmlDisplay.Flex or HtmlDisplay.InlineFlex or HtmlDisplay.Grid or HtmlDisplay.InlineGrid;
 
@@ -527,6 +719,8 @@ internal sealed class HtmlLayout
 
         private Replacement? GetReplacement(IElement element, in HtmlStyle style)
         {
+            if (HtmlCanvas.IsCanvas(element))
+                return new(new Size(HtmlCanvas.GetWidth(element), HtmlCanvas.GetHeight(element)), null, null, null, false);
             if (element.LocalName == "img")
             {
                 var w = ImageDimension(element.GetAttribute("width"));
@@ -968,7 +1162,20 @@ internal sealed class HtmlLayout
         }
 
         private readonly record struct PaintEntry(HtmlDrawItem Item, Plane? Nested = null, int ZIndex = 0);
-        private readonly record struct PaintFrame(IReadOnlyList<PaintEntry> Items, int Next, double X, double Y);
+        private readonly record struct ScrollPlane(HtmlOverflow X, HtmlOverflow Y, double IntrinsicRight, double IntrinsicBottom);
+        private record struct PaintFrame(IReadOnlyList<PaintEntry> Items, double X, double Y, HtmlScrollRegion? Parent,
+            HtmlScrollRegion? Region, ScrollPlane Scroll)
+        {
+            internal int Next;
+            internal double Right = double.NegativeInfinity;
+            internal double Bottom = double.NegativeInfinity;
+
+            internal void Include(double right, double bottom)
+            {
+                Right = Math.Max(Right, right);
+                Bottom = Math.Max(Bottom, bottom);
+            }
+        }
         private readonly record struct Edges(double Top, double Right, double Bottom, double Left)
         {
             internal double Horizontal => Left + Right;
@@ -984,6 +1191,7 @@ internal sealed class HtmlLayout
             internal readonly List<PaintEntry> Items = [];
             internal double X;
             internal double Y;
+            internal ScrollPlane? Scroll;
             private bool _sort;
             internal IReadOnlyList<PaintEntry> PaintItems => !_sort ? Items : Items[0].Nested is null
                 ? Items.Take(1).Concat(Items.Skip(1).OrderBy(entry => entry.ZIndex)).ToArray()

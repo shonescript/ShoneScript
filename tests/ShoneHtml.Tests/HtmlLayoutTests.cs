@@ -494,6 +494,181 @@ public sealed class HtmlLayoutTests(ITestOutputHelper output)
         Assert.Contains(fixedBox, result.GetVisibleItems(200, 290, scrollOffset: 200));
     }
 
+    [Fact]
+    public void OverflowShorthandCascadesAndNormalizesMixedAxes()
+    {
+        using var page = HtmlPage.Parse("""
+            <style>
+              html { overflow: hidden scroll; }
+              #mixed { width: 40px; height: 30px; overflow: clip; overflow-y: scroll !important; }
+              #clip { width: 40px; height: 30px; overflow: visible clip; }
+              #alias { width: 40px; height: 30px; overflow: overlay; }
+            </style>
+            <div id="mixed" style="overflow-y: hidden; overflow: nonsense hidden"><div style="width: 90px; height: 80px"></div></div>
+            <div id="clip"><div style="width: 90px; height: 80px"></div></div>
+            <div id="alias"></div>
+            """);
+        var layout = new HtmlLayout().Get(page.Document, page.Version, 200, Measure, viewportHeight: 100);
+        Assert.Equal((HtmlOverflow.Hidden, HtmlOverflow.Scroll), (layout.ViewportX, layout.ViewportY));
+
+        var mixed = layout.RegionsByElement[page.Document.GetElementById("mixed")!];
+        Assert.Equal((HtmlOverflow.Hidden, HtmlOverflow.Scroll), (mixed.X, mixed.Y));
+        Assert.Equal((50d, 50d), (mixed.MaxX, mixed.MaxY));
+        Assert.True(mixed.BarY);
+        Assert.False(mixed.UserX);
+        Assert.False(mixed.BarX);
+        var clip = layout.RegionsByElement[page.Document.GetElementById("clip")!];
+        Assert.Equal((HtmlOverflow.Visible, HtmlOverflow.Clip), (clip.X, clip.Y));
+        Assert.Equal((0d, 0d), (clip.MaxX, clip.MaxY));
+        var alias = layout.RegionsByElement[page.Document.GetElementById("alias")!];
+        Assert.Equal((HtmlOverflow.Auto, HtmlOverflow.Auto), (alias.X, alias.Y));
+        Assert.False(alias.BarX || alias.BarY);
+        Assert.True(HtmlStyles.SupportsDeclaration("OVERFLOW", " auto clip "));
+        Assert.True(HtmlStyles.SupportsDeclaration("overflow-y", "overlay"));
+        Assert.False(HtmlStyles.SupportsDeclaration("overflow", "visible auto scroll"));
+        Assert.False(HtmlStyles.SupportsDeclaration("overflow-x", "auto clip"));
+    }
+
+    [Fact]
+    public void NestedScrollOffsetsMovePaintHitAndNativeControlTogetherWhileFixedEscapes()
+    {
+        using var page = HtmlPage.Parse("""
+            <style>body { margin: 0; }</style>
+            <div id="outer" style="width:90px; height:70px; overflow:auto">
+              <div id="inner" style="position:relative; width:110px; height:80px; margin:20px 0 0 25px; overflow:auto">
+                <input id="field" style="position:absolute; left:140px; top:95px; width:40px; height:25px">
+                <div id="fixed" style="position:fixed; left:5px; top:5px; width:10px; height:10px"></div>
+              </div>
+            </div>
+            <section style="width:220px; height:250px"></section>
+            """);
+        var layout = new HtmlLayout().Get(page.Document, page.Version, 150, Measure, viewportHeight: 120);
+        var outer = Assert.Single(layout.ScrollRegions, region => region.Element.Id == "outer");
+        var inner = Assert.Single(layout.ScrollRegions, region => region.Element.Id == "inner");
+        Assert.Same(outer, inner.Parent);
+        Assert.Equal((45d, 30d), (outer.MaxX, outer.MaxY));
+        Assert.Equal((70d, 40d), (inner.MaxX, inner.MaxY));
+        Assert.Equal((220d, 320d), (layout.Width, layout.Height));
+
+        var field = Box(layout, "field");
+        var fixedBox = Box(layout, "fixed");
+        Assert.True(fixedBox.Fixed);
+        Assert.Null(fixedBox.ScrollParent);
+        Assert.Same(inner, field.ScrollParent);
+        var viewport = new Rect(0, 0, 150, 120);
+        var before = new HtmlScrollFrame(layout, viewport, default);
+        Assert.DoesNotContain(field, before.VisibleItems());
+        Assert.NotEqual(field, before.HitTest(new(100, 90)));
+        var frame = new HtmlScrollFrame(layout, viewport, new(5, 5), element => element.Id switch
+        {
+            "outer" => new(45, 30), "inner" => new(70, 40), _ => default
+        });
+        var (bounds, clip) = frame.Place(field, field.ControlBounds);
+        Assert.Equal(new Rect(45, 40, 40, 25), bounds);
+        Assert.Equal(new Rect(0, 0, 85, 65), clip);
+        Assert.Contains(field, frame.VisibleItems());
+        Assert.Equal(field, frame.HitTest(new(50, 50)));
+        Assert.NotEqual(field, frame.HitTest(new(85, 64)));
+        Assert.Equal(fixedBox.Bounds, frame.Place(fixedBox).Bounds);
+        Assert.Equal(fixedBox, frame.HitTest(new(6, 6)));
+    }
+
+    [Fact]
+    public void ElementScrollOffsetsSurviveMirrorReplacementAndClampToNewExtents()
+    {
+        using var browser = new HtmlBrowser();
+        using var page = HtmlPage.CreateRendererMirror(browser, new Uri("https://example.test/"));
+        var layout = new HtmlLayout();
+        HtmlRendererNode html = new(1, 0, "html", null, null, null, null);
+        HtmlRendererNode body = new(2, 1, "body", null, null, null, null);
+        HtmlRendererNode panel = new(3, 2, "div", null,
+            new() { ["id"] = "panel", ["style"] = "overflow: auto; width: 50px; height: 40px" }, null, null);
+        HtmlRendererNode child = new(4, 3, "div", null, new() { ["style"] = "width: 150px; height: 140px" }, null, null);
+        page.ApplyRendererSnapshot(new("", [html, body, panel, child]), 0);
+        using var view = new HtmlView(page);
+        var initial = layout.Get(page.Document, page.Version, 160, Measure);
+        var before = Assert.Single(initial.ScrollRegions);
+        Assert.True(view.ScrollElement(before, new(80, 75)));
+
+        page.ApplyRendererSnapshot(new("", [html, body, panel, child with
+        {
+            Attributes = new() { ["style"] = "width: 110px; height: 90px" }
+        }]), 0);
+        var changed = layout.Get(page.Document, page.Version, 160, Measure);
+        var after = Assert.Single(changed.ScrollRegions);
+        Assert.NotSame(before.Element, after.Element);
+        view.ReconcileElementOffsets(changed);
+        Assert.Equal(new Point(60, 50), view.GetElementOffset(after.Element));
+
+        page.ApplyRendererSnapshot(new("", [html, body]), 0);
+        view.ReconcileElementOffsets(layout.Get(page.Document, page.Version, 160, Measure));
+        page.ApplyRendererSnapshot(new("", [html, body, panel, child]), 0);
+        Assert.Equal(default, view.GetElementOffset(page.Document.GetElementById("panel")!));
+    }
+
+    [Fact]
+    public void ViewportScrollBarKeepsTheAssignedBoundsAndAcceptsHits()
+    {
+        using var page = HtmlPage.Parse("""
+            <style>body { margin: 0; }</style><div style="width: 1600px; height: 1500px"></div>
+            """);
+        using var view = new HtmlView(page);
+        var viewport = new Size(960, 680);
+        view.Measure(viewport);
+        view.Arrange(new Rect(10, 50, viewport.Width, viewport.Height));
+        view.ArrangeViewport(viewport);
+        var horizontal = Assert.IsType<Aprillz.MewUI.Controls.ScrollBar>(view[0]);
+        var vertical = Assert.IsType<Aprillz.MewUI.Controls.ScrollBar>(view[1]);
+
+        Assert.True(horizontal.IsVisible);
+        Assert.Equal(new Rect(10, 716, 946, 14), horizontal.Bounds);
+        Assert.Equal(946, horizontal.ViewportSize);
+        Assert.Equal(654, horizontal.Maximum);
+        Assert.Same(horizontal, horizontal.HitTest(new Point(40, 723)));
+        Assert.True(vertical.IsVisible);
+        Assert.Equal(new Rect(956, 50, 14, 666), vertical.Bounds);
+        Assert.Equal(834, vertical.Maximum);
+        Assert.Same(vertical, vertical.HitTest(new Point(963, 80)));
+    }
+
+    [Fact]
+    public void NativeHostClipsHitTestingWithoutShrinkingTheControl()
+    {
+        using var child = new TestControl();
+        using var host = new HtmlView.ClipHost(child);
+        var fieldBounds = new Rect(30, 40, 80, 60);
+        host.Place(fieldBounds, new Rect(50, 50, 30, 30));
+
+        Assert.Equal(fieldBounds, child.Bounds);
+        Assert.Equal(new Rect(50, 50, 30, 30), host.Bounds);
+        Assert.Same(child, host.HitTest(new Point(60, 60)));
+        Assert.Null(host.HitTest(new Point(40, 60)));
+        Assert.Null(host.HitTest(new Point(90, 60)));
+    }
+
+    [Fact]
+    public void ClippedContentDoesNotExpandDocumentAndVisibleAxisRemainsOpen()
+    {
+        using var page = HtmlPage.Parse("""
+            <style>body { margin: 0; overflow: hidden auto; }</style>
+            <div id="clip" style="overflow: visible clip; width: 50px; height: 30px">
+              <div id="child" style="width: 250px; height: 200px"></div>
+            </div>
+            """);
+        var layout = new HtmlLayout().Get(page.Document, page.Version, 100, Measure, viewportHeight: 80);
+        Assert.Equal((HtmlOverflow.Hidden, HtmlOverflow.Auto), (layout.ViewportX, layout.ViewportY));
+        Assert.Equal((250d, 30d), (layout.Width, layout.Height));
+        var child = Box(layout, "child");
+        Assert.Same(child.Element, layout.HitTest(75, 15));
+        Assert.NotSame(child.Element, layout.HitTest(75, 45));
+    }
+
+    private sealed class TestControl : Aprillz.MewUI.Controls.Control
+    {
+        protected override Size MeasureOverride(Size availableSize) => availableSize;
+        protected override Size ArrangeOverride(Size finalSize) => finalSize;
+    }
+
     private static HtmlDrawItem Box(HtmlLayoutResult result, string id) =>
         Assert.Single(result.Items, item => item.Element.Id == id && item.Text is null);
 

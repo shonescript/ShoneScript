@@ -46,7 +46,7 @@ internal static class HtmlRendererProjection
         "sup", "sub", "mark", "q", "abbr", "dfn", "bdi", "bdo", "ruby", "rp", "rt", "time", "data",
         "ul", "ol", "li", "dl", "dt", "dd", "figure", "figcaption", "address", "details", "summary",
         "table", "thead", "tbody", "tfoot", "tr", "caption", "col", "colgroup", "td", "th",
-        "a", "img", "picture", "form", "fieldset", "legend", "label", "button", "input", "textarea",
+        "a", "img", "canvas", "picture", "form", "fieldset", "legend", "label", "button", "input", "textarea",
         "select", "option", "optgroup", "datalist", "output", "progress", "meter"
     };
 
@@ -93,7 +93,14 @@ internal static class HtmlRendererProjection
             };
             if (css is not null)
                 budget.Css(css, MaximumSheetLength);
-            var pixels = tag == "img" && page.GetImage(element) is { } encoded ? Decode(encoded, budget) : null;
+            HtmlRendererPixels? pixels = null;
+            if (tag == "img" && page.GetImage(element) is { } encoded)
+                pixels = Decode(encoded, budget);
+            else if (tag == "canvas" && page.GetCanvasPixels(element) is { } canvas)
+            {
+                budget.Image(PixelBytes(canvas));
+                pixels = canvas with { Rgba = (byte[])canvas.Rgba.Clone() };
+            }
             nodes.Add(new(id, parent, tag, null, attributes, css, pixels));
             if (!Leaves.Contains(tag))
                 for (var child = node.FirstChild; child is not null; child = child.NextSibling)
@@ -148,7 +155,10 @@ internal static class HtmlRendererProjection
             }
             if (node.Pixels is { } pixels)
             {
-                Require(tag == "img");
+                Require(tag is "img" or "canvas");
+                if (tag == "canvas")
+                    Require(pixels.Width == HtmlCanvas.ParseDimension(node.Attributes?.GetValueOrDefault("width"), 300) &&
+                        pixels.Height == HtmlCanvas.ParseDimension(node.Attributes?.GetValueOrDefault("height"), 150));
                 budget.Image(PixelBytes(pixels));
             }
         }
@@ -235,26 +245,11 @@ internal static class HtmlRendererProjection
         var count = HtmlRaster.GetPixelCount(bytes);
         if (count == 0)
             return null;
-        var length = checked((int)count * 4);
-        budget.CheckImage(length);
-        try
-        {
-            using var source = ImageSource.FromBytes(bytes);
-            var width = source.PixelWidth;
-            var height = source.PixelHeight;
-            if (width is <= 0 or > MaximumImageDimension || height is <= 0 or > MaximumImageDimension ||
-                (long)width * height != count)
-                return null;
-            var rgba = new byte[length];
-            source.CopyPixels(rgba, width * 4);
-            SwapRedBlue(rgba);
-            budget.Image(length);
-            return new(width, height, rgba);
-        }
-        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or IOException or NotSupportedException)
-        {
-            return null;
-        }
+        budget.CheckImage(checked((int)count * 4));
+        var pixels = HtmlImageDecoder.Decode(bytes);
+        if (pixels is not null)
+            budget.Image(PixelBytes(pixels));
+        return pixels;
     }
 
     private static void SwapRedBlue(byte[] pixels)
@@ -337,7 +332,8 @@ internal static class HtmlRendererProjection
     {
         "id" or "class" or "style" or "title" or "lang" or "dir" or "hidden" or "tabindex" or "role" => true,
         "name" => tag is "a" or "button" or "form" or "input" or "select" or "textarea" or "output" or "fieldset",
-        "alt" or "width" or "height" => tag == "img",
+        "alt" => tag == "img",
+        "width" or "height" => tag is "img" or "canvas",
         "disabled" => tag is "button" or "fieldset" or "input" or "optgroup" or "option" or "select" or "textarea" or "link",
         "type" => tag is "input" or "button" or "ol",
         "value" => tag is "input" or "button" or "option" or "li" or "data" or "progress" or "meter",

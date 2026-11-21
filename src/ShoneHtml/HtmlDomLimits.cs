@@ -109,6 +109,56 @@ internal sealed partial class HtmlScriptHost
         foreach (var child in staging.ChildNodes.ToArray()) element.AppendChild(child);
     }
 
+    private void ReplaceWith(IElement element, JsValue[] args)
+    {
+        var values = new object[args.Length];
+        for (var i = 0; i < args.Length; i++)
+            values[i] = args[i].Data is NodeObject wrapper ? wrapper.Node : args[i].ToJsString();
+        if (element.Parent is not { } parent) return;
+
+        var replacements = new INode[values.Length];
+        for (var i = 0; i < values.Length; i++)
+            replacements[i] = values[i] is INode node ? node : CreateText((string)values[i]);
+        var moving = new HashSet<INode>(replacements, ReferenceEqualityComparer.Instance);
+        var next = element.NextSibling;
+        while (next is not null && moving.Contains(next)) next = next.NextSibling;
+
+        foreach (var replacement in moving)
+        {
+            if (replacement.NodeType is NodeType.Document or NodeType.DocumentType)
+                throw TypeError("Invalid replacement node");
+            for (INode? ancestor = parent; ancestor is not null; ancestor = ancestor.Parent)
+                if (ReferenceEquals(ancestor, replacement)) throw TypeError("A replacement cannot contain its parent");
+            CheckInsert(parent, replacement);
+        }
+
+        if (parent is IDocument)
+        {
+            var children = replacements.SelectMany(node => node.NodeType == NodeType.DocumentFragment
+                    ? node.ChildNodes.AsEnumerable() : [node]).ToHashSet<INode>(ReferenceEqualityComparer.Instance);
+            if (children.Any(node => node.NodeType is not (NodeType.Element or NodeType.Comment or NodeType.ProcessingInstruction)) ||
+                children.Count(node => node.NodeType == NodeType.Element) > 1)
+                throw TypeError("Invalid document element replacement");
+        }
+
+        if (replacements.Length == 1)
+        {
+            if (!ReferenceEquals(replacements[0], element)) parent.ReplaceChild(replacements[0], element);
+        }
+        else if (replacements.Length == 0)
+        {
+            parent.RemoveChild(element);
+        }
+        else
+        {
+            var fragment = _page.Document.CreateDocumentFragment();
+            foreach (var replacement in replacements) fragment.AppendChild(replacement);
+            if (ReferenceEquals(element.Parent, parent)) parent.ReplaceChild(fragment, element);
+            else parent.InsertBefore(fragment, next);
+        }
+        _page.MarkDirty();
+    }
+
     private void SetOuterHtml(IElement element, string html)
     {
         if (element.Parent is not { } parent) return;

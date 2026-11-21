@@ -95,6 +95,11 @@ internal sealed partial class HtmlScriptHost
             var matches = Element(e).QuerySelectorAll(Arg(a, 0).ToJsString()).ToArray();
             return NodeList(() => matches);
         });
+        Method(_elementPrototype, "replaceWith", 0, (e, a) =>
+        {
+            ReplaceWith(Element(e), a);
+            return JsValue.Undefined;
+        });
         Method(_elementPrototype, "append", 0, (e, a) =>
         {
             var node = Element(e);
@@ -127,6 +132,7 @@ internal sealed partial class HtmlScriptHost
         Method(_documentPrototype, "createDocumentFragment", 0, (e, _) => Wrap(AccountNode(Document(e).CreateDocumentFragment())));
         Method(_documentPrototype, "createElementNS", 2, (e, a) => Wrap(AccountNode(Document(e).CreateElement(Arg(a, 1).ToJsString(), Arg(a, 0).ToJsString()))));
         BindFormProperties();
+        BindImage();
     }
 
     private void BindFormProperties()

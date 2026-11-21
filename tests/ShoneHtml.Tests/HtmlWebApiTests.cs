@@ -7,6 +7,39 @@ namespace ShoneHtml.Tests;
 public sealed class HtmlWebApiTests
 {
     [Fact]
+    public void ReplaceWithMovesNodesAndInsertsLiteralTextInArgumentOrder()
+    {
+        var errors = new List<HtmlScriptError>();
+        using var page = HtmlPage.Parse("""
+            <main><i id=old></i><b id=next></b><u id=end></u></main><strong id=move>move</strong>
+            <script>
+              const old = document.getElementById('old');
+              if (!(old instanceof Element) || typeof Element.prototype.replaceWith !== 'function') throw new Error('Element prototype');
+              const next = document.getElementById('next');
+              const moved = document.getElementById('move');
+              const fragment = document.createDocumentFragment();
+              fragment.appendChild(document.createTextNode('fragment'));
+              old.replaceWith('<x>', next, fragment, moved, old, moved);
+              if (old.parentElement.localName !== 'main' || fragment.firstChild !== null ||
+                  moved !== document.getElementById('move')) throw new Error('node state');
+              try { old.replaceWith(moved, old.parentElement); } catch (error) {
+                if (error.name !== 'TypeError') throw error;
+                document.title = 'ancestor rejected';
+              }
+              old.replaceWith();
+              old.replaceWith('detached');
+            </script>
+            """, new() { OnScriptError = errors.Add });
+        Assert.Empty(errors);
+        Assert.Equal("ancestor rejected", page.Title);
+        var main = page.Document.QuerySelector("main")!;
+        Assert.Equal("<x>fragmentmove", main.TextContent);
+        Assert.Equal(new[] { "next", "move", "end" }, main.Children.Select(element => element.Id));
+        Assert.Null(page.Document.GetElementById("old"));
+        Assert.Null(main.QuerySelector("x"));
+    }
+
+    [Fact]
     public void TraversalPropertiesAndEventPhasesShareLiveDomState()
     {
         using var page = HtmlPage.Parse("""
@@ -210,6 +243,113 @@ public sealed class HtmlWebApiTests
         Assert.Equal($"{HtmlBrowser.Platform}|1440|960|1.5", browser.Page.Title);
         Assert.Equal("true|true|true|true|false|false|false|false|false|false",
             browser.Page.Document.Body.GetAttribute("data-css"));
+    }
+
+    [Fact]
+    public async Task ImageSupportsDetachedLoadingThenDomInsertionAndOnlyPublishesTheLatestSource()
+    {
+        var errors = new ConcurrentQueue<HtmlScriptError>();
+        var outcome = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var requests = new ConcurrentQueue<string>();
+        var bytes = Convert.FromBase64String(HtmlRasterTests.Webp);
+        await using var server = new BrowserHttpFixture(request =>
+        {
+            requests.Enqueue(request.Target);
+            return request.Target switch
+            {
+                "/" => Response.Text($$"""
+                    <title>start</title><body><script>
+                    const img = new Image(12, 34);
+                    const valid = img instanceof HTMLImageElement && img instanceof Image && img.tagName === 'IMG' &&
+                        img.complete && img.naturalWidth === 0 && img.width === 12 && img.height === 34;
+                    const broken = document.createElement('img');
+                    broken.addEventListener('error', event => fetch('/outcome?result=' + [valid, event.target === broken,
+                        event.bubbles, broken.complete, broken.naturalWidth, img.naturalHeight, img.width,
+                        img.isConnected, img.parentElement === document.body].join(',')));
+                    img.onerror = () => fetch('/unexpected');
+                    img.onload = event => {
+                        if (event.bubbles || event.cancelable || event.target !== img || !img.complete ||
+                            img.naturalWidth !== 1 || img.currentSrc !== img.src) return;
+                        document.body.appendChild(img);
+                        broken.setAttribute('src', 'data:image/webp;base64,@@@@');
+                    };
+                    img.src = '/superseded';
+                    img.setAttribute('src', 'data:image/webp;base64,{{HtmlRasterTests.Webp}}');
+                    if (img.complete) fetch('/unexpected');
+                    </script>
+                    """),
+                _ when request.Target.StartsWith("/outcome?result=", StringComparison.Ordinal) => Complete(request.Target),
+                _ => new("image/webp", bytes)
+            };
+        });
+        using var browser = Trusted(errors);
+        await browser.NavigateAsync(server.Root).WaitAsync(TimeSpan.FromSeconds(8));
+        var target = await outcome.Task.WaitAsync(TimeSpan.FromSeconds(8));
+        Assert.Equal("/outcome?result=true,true,false,true,0,1,12,true,true", target);
+        Assert.DoesNotContain("/superseded", requests);
+        Assert.DoesNotContain("/unexpected", requests);
+        Assert.Empty(errors);
+        var image = Assert.Single(browser.Page!.Document.QuerySelectorAll("img"));
+        Assert.Equal(bytes, browser.Page.GetImage(image));
+
+        Response Complete(string target)
+        {
+            outcome.TrySetResult(target);
+            return Response.Text("");
+        }
+    }
+
+    [Fact]
+    public async Task NewImageSourceCanCompleteWhileTheSupersededHttpResponseIsPending()
+    {
+        var errors = new ConcurrentQueue<HtmlScriptError>();
+        var olderRequested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var loaded = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseOlder = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var older = Convert.FromBase64String("UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAAIGI6H8g+h8RAA==");
+        var newer = Convert.FromBase64String(HtmlRasterTests.Webp);
+        await using var server = new BrowserHttpFixture(async (request, token) =>
+        {
+            switch (request.Target)
+            {
+                case "/":
+                    return Response.Text("""
+                        <title>waiting</title><button>Replace</button><img id=image>
+                        <script>
+                        const image = document.getElementById('image');
+                        image.onload = () => {
+                            document.title += ':' + image.currentSrc.split('/').pop();
+                            fetch('/loaded');
+                        };
+                        document.querySelector('button').onclick = () => { image.src = '/newer.webp'; };
+                        image.src = '/older.webp';
+                        </script>
+                        """);
+                case "/older.webp":
+                    olderRequested.TrySetResult();
+                    await releaseOlder.Task.WaitAsync(token);
+                    return new("image/webp", older);
+                case "/newer.webp": return new("image/webp", newer);
+                case "/loaded":
+                    loaded.TrySetResult();
+                    return Response.Text("");
+                default: return new("text/plain", [], "404 Not Found");
+            }
+        });
+        using var browser = Trusted(errors);
+        await browser.NavigateAsync(server.Root).WaitAsync(TimeSpan.FromSeconds(8));
+        await olderRequested.Task.WaitAsync(TimeSpan.FromSeconds(8));
+        var page = browser.Page!;
+        await page.ActivateAsync(page.Document.QuerySelector("button")!);
+        await loaded.Task.WaitAsync(TimeSpan.FromSeconds(8));
+        releaseOlder.TrySetResult();
+        await browser.RunAsync(() =>
+        {
+            Assert.Equal("waiting:newer.webp", page.Title);
+            Assert.Equal(newer, page.GetImage(page.Document.GetElementById("image")!));
+            return Task.CompletedTask;
+        });
+        Assert.Empty(errors);
     }
 
     private static HtmlBrowser Trusted(ConcurrentQueue<HtmlScriptError> errors) => new(new HtmlBrowserOptions

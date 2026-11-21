@@ -16,6 +16,7 @@ internal readonly record struct HtmlTextStyle(string? FontFamily, double FontSiz
 
 internal enum HtmlDisplay { Inline, Block, InlineBlock, None, Flex, InlineFlex, Grid, InlineGrid }
 internal enum HtmlPosition { Static, Relative, Absolute, Fixed }
+internal enum HtmlOverflow { Visible, Hidden, Clip, Auto, Scroll }
 internal enum HtmlAlign { Normal, Start, Center, End, Stretch, SpaceBetween, SpaceAround, SpaceEvenly }
 internal readonly record struct CssTrack(CssLength? Length, double Fraction = 0, CssLength? Minimum = null);
 internal enum HtmlWhiteSpace { Normal, NoWrap, Pre, PreWrap }
@@ -52,6 +53,7 @@ internal record struct HtmlStyle(HtmlTextStyle Text)
     internal CssLength? MaxHeight;
     internal CssLength? Top, Right, Bottom, Left;
     internal HtmlPosition Position;
+    internal HtmlOverflow OverflowX, OverflowY;
     internal int? ZIndex;
     internal CssLength RowGap, ColumnGap;
     internal CssLength? FlexBasis;
@@ -167,6 +169,9 @@ internal sealed class HtmlStyles
         ApplyRules(false);
         ApplyRules(true);
         _matching.Clear();
+        var (overflowX, overflowY) = (style.OverflowX, style.OverflowY);
+        style.OverflowX = ComputeOverflow(overflowX, overflowY);
+        style.OverflowY = ComputeOverflow(overflowY, overflowX);
         if (element.LocalName is "head" or "script" or "style" or "template" or "link" ||
             element is IHtmlInputElement { Type: "hidden" }) style.Display = HtmlDisplay.None;
         return style;
@@ -540,6 +545,8 @@ internal sealed class HtmlStyles
             "display" => ParseDisplay(keyword) is not null,
             "box-sizing" => keyword is "border-box" or "content-box",
             "position" => keyword is "static" or "relative" or "absolute" or "fixed",
+            "overflow" => TryOverflow(keyword, out _, out _),
+            "overflow-x" or "overflow-y" => ParseOverflow(keyword) is not null || keyword is "inherit" or "initial" or "unset",
             "inset" => TryInsets(keyword, out _),
             "top" or "right" or "bottom" or "left" => TryOffset(keyword, out _),
             "width" or "height" => keyword == "auto" || TryLength(keyword, false, out _),
@@ -580,6 +587,31 @@ internal sealed class HtmlStyles
         "inline-block" => HtmlDisplay.InlineBlock, "flex" => HtmlDisplay.Flex, "inline-flex" => HtmlDisplay.InlineFlex,
         "grid" => HtmlDisplay.Grid, "inline-grid" => HtmlDisplay.InlineGrid, _ => null
     };
+
+    private static HtmlOverflow? ParseOverflow(string keyword) => keyword switch
+    {
+        "visible" => HtmlOverflow.Visible, "hidden" => HtmlOverflow.Hidden, "clip" => HtmlOverflow.Clip,
+        "auto" or "overlay" => HtmlOverflow.Auto, "scroll" => HtmlOverflow.Scroll, _ => null
+    };
+
+    private static bool TryOverflow(string keyword, out HtmlOverflow x, out HtmlOverflow y)
+    {
+        x = y = HtmlOverflow.Visible;
+        if (keyword is "inherit" or "initial" or "unset") return true;
+        var parts = keyword.Split(HtmlSpace, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length is < 1 or > 2 || ParseOverflow(parts[0]) is not { } first ||
+            ParseOverflow(parts[^1]) is not { } last) return false;
+        (x, y) = (first, last);
+        return true;
+    }
+
+    private static HtmlOverflow ComputeOverflow(HtmlOverflow axis, HtmlOverflow other) =>
+        other is HtmlOverflow.Visible or HtmlOverflow.Clip ? axis : axis switch
+        {
+            HtmlOverflow.Visible => HtmlOverflow.Auto,
+            HtmlOverflow.Clip => HtmlOverflow.Hidden,
+            _ => axis
+        };
 
     private static bool ValidGap(string name, string[] parts, out CssLength first)
     {
@@ -730,6 +762,18 @@ internal sealed class HtmlStyles
                         case "max-height": style.MaxHeight = limit; break;
                     }
                 }
+                break;
+            case "overflow":
+                if (TryOverflow(keyword, out var overflowX, out var overflowY))
+                    (style.OverflowX, style.OverflowY) = inherit ? (parent.OverflowX, parent.OverflowY) : (overflowX, overflowY);
+                break;
+            case "overflow-x":
+                style.OverflowX = inherit ? parent.OverflowX : initial || keyword == "unset" ? HtmlOverflow.Visible :
+                    ParseOverflow(keyword) ?? style.OverflowX;
+                break;
+            case "overflow-y":
+                style.OverflowY = inherit ? parent.OverflowY : initial || keyword == "unset" ? HtmlOverflow.Visible :
+                    ParseOverflow(keyword) ?? style.OverflowY;
                 break;
             case "position":
                 style.Position = keyword switch
@@ -1076,7 +1120,7 @@ internal sealed class HtmlStyles
         return hasStyle || hasWidth || hasColor;
     }
 
-    private static bool TryColor(ReadOnlySpan<char> value, out Color color)
+    internal static bool TryColor(ReadOnlySpan<char> value, out Color color)
     {
         color = default;
         if (value.IsEmpty)

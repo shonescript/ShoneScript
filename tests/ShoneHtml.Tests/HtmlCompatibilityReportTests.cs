@@ -3,11 +3,12 @@ using System.Diagnostics;
 using AngleSharp.Dom;
 using AngleSharp.Html.Dom;
 using AngleSharp.Html.Parser;
+using Xunit.Abstractions;
 using static ShoneHtml.Tests.BrowserHttpFixture;
 
 namespace ShoneHtml.Tests;
 
-public sealed class HtmlCompatibilityReportTests
+public sealed class HtmlCompatibilityReportTests(ITestOutputHelper output)
 {
     private const string SnapshotFileVariable = "SHONEHTML_COMPATIBILITY_SNAPSHOT";
     private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(8);
@@ -123,6 +124,68 @@ public sealed class HtmlCompatibilityReportTests
         Assert.Contains("Page scripts were not run", browser.Status);
     }
 
+    [Fact]
+    public async Task OfflineHtml5ProbesSettleWithDecodedWebpAndCanvasPixels()
+    {
+        const string script = """
+            const report = (id, result) => document.getElementById(id).textContent = result ? 'supported' : 'unsupported';
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d', {willReadFrequently: true});
+            if (ctx) {
+              ctx.fillStyle = 'rgba(255, 0, 0, 0.5)';
+              ctx.fillRect(0, 0, 1, 1);
+              const px = ctx.getImageData(0, 0, 1, 1).data;
+              report('canvas', px[0] === 255 && px[3] === 128 && ctx.getContextAttributes().colorSpace === 'srgb');
+            } else report('canvas', false);
+            const replacement = document.createElement('strong');
+            replacement.id = 'replacement';
+            document.getElementById('old').replaceWith(replacement);
+            report('replacement', typeof Element.prototype.replaceWith === 'function' && !document.getElementById('old'));
+            report('clip', CSS.supports('overflow', 'clip') && !CSS.supports('overflow', 'invalid'));
+            function imageProbe(id, payload) {
+              const img = new Image();
+              img.onload = () => report(id, img.width === 1 && img.naturalWidth === 1 && img.complete);
+              img.onerror = () => report(id, false);
+              img.src = 'data:image/webp;base64,' + payload;
+            }
+            imageProbe('webp', 'UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA==');
+            imageProbe('lossless', 'UklGRh4AAABXRUJQVlA4TBEAAAAvAAAAAAfQ//73v/+BiOh/AAA=');
+            imageProbe('alpha', 'UklGRkoAAABXRUJQVlA4WAoAAAAQAAAAAAAAAAAAQUxQSAwAAAARBxAR/Q9ERP8DAABWUDggGAAAABQBAJ0BKgEAAQAAAP4AAA3AAP7mtQAAAA==');
+            imageProbe('animation', 'UklGRlIAAABXRUJQVlA4WAoAAAASAAAAAAAAAAAAQU5JTQYAAAD/////AABBTk1GJgAAAAAAAAAAAAAAAAAAAGQAAABWUDhMDQAAAC8AAAAQBxAREYiI/gcA');
+            """;
+        await using var server = new BrowserHttpFixture(_ => Response.Text($"""
+            <!doctype html><p id=canvas>pending</p><p id=old>pending</p>
+            <p id=clip>pending</p><p id=webp>pending</p><p id=lossless>pending</p>
+            <p id=alpha>pending</p><p id=animation>pending</p><script>{script}</script>
+            """));
+        var errors = new ConcurrentQueue<HtmlScriptError>();
+        using var browser = CreateTrustedBrowser(errors);
+        await browser.NavigateAsync(server.Root).WaitAsync(TestTimeout);
+        var timer = Stopwatch.StartNew();
+        while (true)
+        {
+            var settled = false;
+            await browser.RunAsync(() =>
+            {
+                AssertNoErrors(errors);
+                var page = Assert.IsType<HtmlPage>(browser.Page);
+                foreach (var id in new[] { "canvas", "replacement", "clip" })
+                    Assert.Equal("supported", Find(page, "#" + id).TextContent);
+                settled = true;
+                foreach (var id in new[] { "webp", "lossless", "alpha", "animation" })
+                {
+                    var result = Find(page, "#" + id).TextContent;
+                    settled &= result != "pending";
+                    if (result != "pending") Assert.Equal(id == "animation" ? "unsupported" : "supported", result);
+                }
+                return Task.CompletedTask;
+            }).WaitAsync(TestTimeout);
+            if (settled) return;
+            Assert.True(timer.Elapsed < TestTimeout, "The WebP probe did not settle.");
+            await Task.Delay(25);
+        }
+    }
+
     [CompatibilitySnapshotFact]
     public async Task TrustedLocalSnapshotSettlesAndReruns()
     {
@@ -194,6 +257,9 @@ public sealed class HtmlCompatibilityReportTests
                         Assert.NotEmpty(group.QuerySelectorAll(".h5-row"));
                     });
                     Assert.All(rows, row => Assert.Contains(row.GetAttribute("data-r"), new[] { "y", "p", "n" }));
+                    output.WriteLine($"{score} / {max}, {rows.Length} settled probes");
+                    foreach (var row in rows)
+                        output.WriteLine($"{row.GetAttribute("data-r")}\t{row.QuerySelector(".h5-name")?.TextContent.Trim()}");
                     firstRow = rows[0];
                     return Task.CompletedTask;
                 }).WaitAsync(TestTimeout);

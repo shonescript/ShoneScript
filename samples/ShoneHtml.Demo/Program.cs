@@ -56,9 +56,10 @@ else if (OperatingSystem.IsMacOS())
 else
     throw new PlatformNotSupportedException("The ShoneHtml demo supports Windows, Linux X11, and macOS.");
 
-var scriptMode = args.Contains("--no-scripts", StringComparer.Ordinal) ? HtmlBrowserScriptMode.Disabled :
-    args.Contains("--trusted-scripts", StringComparer.Ordinal) ? HtmlBrowserScriptMode.TrustedInProcess :
-    HtmlBrowserScriptMode.Auto;
+var scriptMode = HtmlBrowserScriptMode.TrustedInProcess;
+//var scriptMode = args.Contains("--no-scripts", StringComparer.Ordinal) ? HtmlBrowserScriptMode.Disabled :
+//    args.Contains("--trusted-scripts", StringComparer.Ordinal) ? HtmlBrowserScriptMode.TrustedInProcess :
+//    HtmlBrowserScriptMode.Auto;
 var address = args.FirstOrDefault(arg => !arg.StartsWith("--", StringComparison.Ordinal));
 application.BuildMainWindow(() => BrowserWindow.Create(address, html, scriptMode)).Run();
 return 0;

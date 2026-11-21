@@ -149,6 +149,83 @@ public sealed class HtmlRendererTests
         Assert.Equal(1, await worker.Exit.WaitAsync(worker.Token));
     }
 
+    private const string PixelPage = """
+        <canvas id="canvas" width="2" height="1"></canvas>
+        <img id="webp" src="data:image/webp;base64,UklGRhoAAABXRUJQVlA4TA4AAAAvAAAAEIGI6H8g+h8NDA==">
+        <script>
+          const ctx = document.getElementById('canvas').getContext('2d');
+          ctx.fillStyle = 'rgba(0, 128, 255, 0.5)';
+          ctx.fillRect(0, 0, 1, 1);
+        </script>
+        """;
+
+    [Fact]
+    public async Task ProjectsCanvasAndDecodedWebpThroughWorkerProtocol()
+    {
+        await using var worker = await WorkerPipe.StartAsync();
+        await worker.OpenAsync(PixelPage);
+        AssertPixelMirror(Snapshot(await worker.ReadResultAsync(1)));
+    }
+
+    [PublishedWorkerFact]
+    public async Task PublishedWorkerProjectsCanvasAndWebp()
+    {
+        using var timeout = new CancellationTokenSource(Timeout);
+        var token = timeout.Token;
+        var executable = Path.GetFullPath(Environment.GetEnvironmentVariable(PublishedWorkerFactAttribute.PathVariable)!);
+        using var process = await HtmlWindowsSandbox.StartAsync(executable, "--renderer", token);
+        using var registration = token.Register(process.Dispose);
+        var wire = new HtmlRendererProtocol(process.Input, process.Output);
+        Assert.Equal(HtmlRendererMessage.Hello, (await wire.ReadAsync(token)).Type);
+        await wire.WriteAsync(HtmlRendererMessage.Open, Document, 1,
+            new HtmlRendererOpen(Resource("/index", PixelPage, "text/html"), 10_000), HtmlRendererJson.Default.HtmlRendererOpen, token);
+        var frame = await wire.ReadAsync(token);
+        Assert.Equal(HtmlRendererMessage.Result, frame.Type);
+        var result = frame.Decode(HtmlRendererJson.Default.HtmlRendererResult);
+        Assert.Null(result.Error);
+        AssertPixelMirror(Snapshot(result));
+    }
+
+    [Fact]
+    public void RejectsInvalidProjectedPixelShapeAndAggregateBudget()
+    {
+        HtmlRendererNode root = new(1, 0, "html", null, null, null, null);
+        HtmlRendererNode canvas = new(2, 1, "canvas", null, new() { ["width"] = "1", ["height"] = "1" }, null,
+            new(1, 1, new byte[4]));
+        Assert.Throws<InvalidDataException>(() => HtmlRendererProjection.Materialize(new("", [root,
+            canvas with { Pixels = new(1, 1, new byte[3]) }])));
+        Assert.Throws<InvalidDataException>(() => HtmlRendererProjection.Materialize(new("", [root,
+            canvas with { Pixels = new(2, 1, new byte[8]) }])));
+        Assert.Throws<InvalidDataException>(() => HtmlRendererProjection.Materialize(new("", [root,
+            canvas with { Tag = "div" }])));
+        var large = new HtmlRendererPixels(1024, 1024, new byte[4 * 1024 * 1024]);
+        HtmlRendererNode image = new(2, 1, "img", null, null, null, large);
+        Assert.Throws<InvalidDataException>(() => HtmlRendererProjection.Materialize(new("",
+            [root, image, image with { Id = 3 }, image with { Id = 4 }])));
+    }
+
+    private static void AssertPixelMirror(HtmlRendererSnapshot snapshot)
+    {
+        var mirror = HtmlRendererProjection.Materialize(snapshot);
+        var canvas = mirror.Images[mirror.Document.GetElementById("canvas")!];
+        Assert.Equal((2, 1), (canvas.Width, canvas.Height));
+        Assert.Equal(new byte[] { 0, 128, 255, 128, 0, 0, 0, 0 }, canvas.Rgba);
+        var image = mirror.Images[mirror.Document.GetElementById("webp")!];
+        Assert.Equal((1, 1), (image.Width, image.Height));
+        Assert.Equal(new byte[] { 255, 0, 0, 128 }, image.Rgba);
+    }
+
+    private sealed class PublishedWorkerFactAttribute : FactAttribute
+    {
+        internal const string PathVariable = "SHONEHTML_PUBLISHED_WORKER";
+
+        public PublishedWorkerFactAttribute()
+        {
+            if (!OperatingSystem.IsWindows() || string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(PathVariable)))
+                Skip = $"Set {PathVariable} to the Windows worker published for this build.";
+        }
+    }
+
     private static HtmlRendererSnapshot Snapshot(HtmlRendererResult result) => Assert.IsType<HtmlRendererSnapshot>(result.Snapshot);
 
     private static HtmlRendererResource Resource(string path, string text, string contentType) =>
