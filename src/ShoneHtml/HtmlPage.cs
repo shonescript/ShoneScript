@@ -1,3 +1,4 @@
+using System.Net;
 using AngleSharp.Dom;
 using AngleSharp.Html.Dom;
 using AngleSharp.Html.Parser;
@@ -80,19 +81,29 @@ public sealed class HtmlPage : IDisposable
     internal static async Task<HtmlPage> LoadDocumentAsync(HtmlBrowser browser, HtmlResource resource, CancellationToken token)
     {
         var mediaType = resource.ContentType?.Split(';', 2)[0].Trim().ToLowerInvariant();
+        var imageResponse = mediaType?.StartsWith("image/", StringComparison.Ordinal) == true;
+        var supportedImage = imageResponse && resource.IsSuccess && HtmlRaster.GetPixelCount(resource.Bytes) > 0;
         var document = await Task.Run(() =>
         {
+            var parser = new HtmlParser();
+            if (imageResponse)
+                return parser.ParseDocument(supportedImage
+                    ? "<!doctype html><title>Image</title><img alt='Image unavailable' style='display:block;max-width:100%;height:auto'>"
+                    : "<!doctype html><title>Image unavailable</title><p>Unsupported or invalid image.</p>");
             var html = mediaType is null or "text/html" or "application/xhtml+xml";
             var text = resource.DecodeText(html);
-            return new HtmlParser().ParseDocument(html ? text : "<!doctype html><pre>" +
-                System.Net.WebUtility.HtmlEncode(text) + "</pre>");
+            return parser.ParseDocument(html ? text : "<!doctype html><pre>" + WebUtility.HtmlEncode(text) + "</pre>");
         }, token);
         token.ThrowIfCancellationRequested();
         ValidateTree(document, browser.Options, token);
         var page = new HtmlPage(document, browser, resource.Address);
         try
         {
-            if (resource.IsSuccess)
+            if (supportedImage)
+                page._images[document.QuerySelector("img")!] = resource.Bytes;
+            else if (imageResponse)
+                page.ResourceStatus = "Unsupported or invalid image.";
+            else if (resource.IsSuccess)
                 await page.LoadAssetsAsync(token);
             return page;
         }
@@ -134,18 +145,24 @@ public sealed class HtmlPage : IDisposable
             .Select(element =>
             {
                 var reference = element.GetAttribute(element.LocalName == "img" ? "src" : "href");
-                return (Element: element, Address: string.IsNullOrWhiteSpace(reference) ? null : ResolveAddress(reference));
+                var data = element.LocalName == "img" && reference?.StartsWith("data:", StringComparison.OrdinalIgnoreCase) == true
+                    ? reference : null;
+                var address = data is null && !string.IsNullOrWhiteSpace(reference) ? ResolveAddress(reference) : null;
+                return (Element: element, Key: data ?? (address is null ? null : HtmlResources.WithoutFragment(address).AbsoluteUri));
             })
-            .GroupBy(asset => asset.Address is { } uri ? HtmlResources.WithoutFragment(uri) : null).Chunk(4))
+            .GroupBy(asset => asset.Key, StringComparer.Ordinal).Chunk(4))
         {
             var results = await Task.WhenAll(group.Select(async assetsAtAddress =>
             {
-                var address = assetsAtAddress.Key;
+                var reference = assetsAtAddress.Key;
                 try
                 {
-                    if (address is null)
+                    token.ThrowIfCancellationRequested();
+                    if (reference is null)
                         return null;
-                    return await Browser.Resources.LoadAsync(address, token);
+                    if (reference.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+                        return DecodeEmbeddedImage(reference, options.MaximumResponseBytes);
+                    return await Browser.Resources.LoadAsync(new Uri(reference), token);
                 }
                 catch (Exception exception) when (exception is HttpRequestException or IOException)
                 {
@@ -189,6 +206,25 @@ public sealed class HtmlPage : IDisposable
         }
         if (failures > 0)
             ResourceStatus = $"{failures} page resource(s) unavailable.";
+    }
+
+    private HtmlResource? DecodeEmbeddedImage(string reference, int limit)
+    {
+        var comma = reference.IndexOf(',');
+        const string base64 = ";base64";
+        if (comma < 5 + base64.Length || !reference.AsSpan(5, comma - 5).EndsWith(base64, StringComparison.OrdinalIgnoreCase))
+            return null;
+        var media = reference[5..(comma - base64.Length)].ToLowerInvariant();
+        if (media is not ("image/png" or "image/jpeg" or "image/gif" or "image/bmp"))
+            return null;
+        var payload = reference.AsSpan(comma + 1);
+        if (payload.Length > ((long)limit + 2) / 3 * 4)
+            return null;
+        var bytes = new byte[(int)((long)payload.Length / 4 * 3)];
+        if (!Convert.TryFromBase64Chars(payload, bytes, out var written) || written > limit)
+            return null;
+        return new HtmlResource(Address!, HttpStatusCode.OK, bytes.AsSpan(0, written).ToArray(), media,
+            new Dictionary<string, string>(), false);
     }
 
     internal async Task LoadScriptsAsync(HtmlPageOptions options)

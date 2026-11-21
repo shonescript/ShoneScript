@@ -40,6 +40,50 @@ public sealed class HtmlBrowserTests
     }
 
     [Fact]
+    public async Task DirectImageNavigationUsesTheResponseWithoutRefetching()
+    {
+        var requests = 0;
+        await using var server = new BrowserHttpFixture(request =>
+        {
+            Interlocked.Increment(ref requests);
+            return request.Target == "/pixel"
+                ? new Response("image/png", Pixel)
+                : new Response("image/svg+xml", "<svg/>"u8.ToArray());
+        });
+        using var browser = new HtmlBrowser();
+        await browser.NavigateAsync(server.Address("pixel"));
+        var page = Assert.IsType<HtmlPage>(browser.Page);
+        var image = Assert.Single(page.Document.QuerySelectorAll("img"));
+        Assert.Equal(Pixel, page.GetImage(image));
+        Assert.Null(page.Document.QuerySelector("pre"));
+        Assert.Equal(1, requests);
+
+        await browser.NavigateAsync(server.Address("unsupported"));
+        Assert.Null(browser.Page!.Document.QuerySelector("img, pre"));
+        Assert.Contains("Unsupported or invalid image", browser.Status);
+    }
+
+    [Fact]
+    public async Task LoadsEmbeddedBase64RasterWithoutAllowingDataNavigation()
+    {
+        var requests = 0;
+        var source = "data:image/png;base64," + Convert.ToBase64String(Pixel);
+        await using var server = new BrowserHttpFixture(_ =>
+        {
+            Interlocked.Increment(ref requests);
+            return Response.Text($"<img id=valid src='{source}'><img id=invalid src='data:image/png;base64,@@@@'>");
+        });
+        using var browser = new HtmlBrowser();
+        await browser.NavigateAsync(server.Root);
+        var page = Assert.IsType<HtmlPage>(browser.Page);
+        Assert.Equal(Pixel, page.GetImage(page.Document.GetElementById("valid")!));
+        Assert.Null(page.GetImage(page.Document.GetElementById("invalid")!));
+        Assert.Equal(1, requests);
+        await browser.NavigateAsync(new Uri(source));
+        Assert.Same(page, browser.Page);
+    }
+
+    [Fact]
     public async Task FragmentHistoryAndReloadRestoreScrollAndTruncateForwardEntries()
     {
         var requests = 0;
