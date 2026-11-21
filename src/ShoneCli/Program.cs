@@ -4,15 +4,26 @@
 using ShoneJs;
 using ShoneJs.Parsing;
 using ShoneJs.Runtime;
+using ShoneLisp;
+using ShoneLisp.Parsing;
+using ShoneLisp.Runtime;
+using ShoneLua;
 using ShonePy;
 
-const string usage = "Usage: ShoneScript [--ts] [--bigfloat] [-e <script>]\n       ShoneScript --py [-e <script>]\nPipe a complete script to stdin or use the JavaScript prompt with no arguments.";
+const string usage = """
+    Usage: ShoneScript [--ts] [--bigfloat] [-e <script>]
+           ShoneScript --py [-e <script>]
+           ShoneScript --lisp [-e <script>]
+           ShoneScript --lua [-e <script>]
+           ShoneScript -h | --help
+    Pipe a complete script to stdin or use the JavaScript prompt with no arguments.
+    """;
 
-var python = args is ["--py", ..];
-if (python) args = args[1..];
+var language = args is ["--py" or "--lisp" or "--lua", ..] ? args[0] : null;
+if (language is not null) args = args[1..];
 
 bool typeScript = false, enableBigFloat = false;
-if (!python)
+if (language is null)
 {
     int optionCount = 0;
     while (optionCount < args.Length)
@@ -31,10 +42,11 @@ if (args is ["-h" or "--help"])
     return 0;
 }
 
-if (python)
+if (language is not null)
 {
-    if (args is ["-e", var pythonSource]) return EvaluatePython(pythonSource, "<command>");
-    if (args.Length == 0 && Console.IsInputRedirected) return EvaluatePython(Console.In.ReadToEnd(), "<stdin>");
+    if (args is ["-e", var script]) return EvaluateScript(language, script, "<command>");
+    if (args.Length == 0 && Console.IsInputRedirected)
+        return EvaluateScript(language, Console.In.ReadToEnd(), "<stdin>");
     Console.Error.WriteLine(usage);
     return 2;
 }
@@ -68,6 +80,48 @@ while (true)
         return 0;
     if (!string.IsNullOrWhiteSpace(line))
         Evaluate(engine, line);
+}
+
+static int EvaluateScript(string language, string source, string fileName)
+{
+    try
+    {
+        switch (language)
+        {
+            case "--lisp":
+                var lisp = new LispEngine(output: Console.Out).Execute(source, fileName);
+                if (!lisp.IsUnspecified) Console.WriteLine(lisp);
+                return 0;
+            case "--lua":
+                var lua = new LuaEngine(output: Console.Out).Execute(source, fileName);
+                if (lua.HasReturnValue) Console.WriteLine(lua.Value);
+                return 0;
+            default:
+                return EvaluatePython(source, fileName);
+        }
+    }
+    catch (LispParseException error)
+    {
+        return ReportDiagnostic(error.FileName ?? fileName, error.Position, "SyntaxError", error.Message);
+    }
+    catch (LuaParseException error)
+    {
+        return ReportDiagnostic(error.FileName ?? fileName, error.Position, "SyntaxError", error.Message);
+    }
+    catch (LispRuntimeException error)
+    {
+        return ReportDiagnostic(error.FileName ?? fileName, error.Position, "RuntimeError", error.Message);
+    }
+    catch (LuaRuntimeException error)
+    {
+        return ReportDiagnostic(error.FileName ?? fileName, error.Position, "RuntimeError", error.Message);
+    }
+}
+
+static int ReportDiagnostic(string fileName, SourcePosition position, string kind, string message)
+{
+    Console.Error.WriteLine($"{fileName}:{position.Line}:{position.Column}: {kind}: {message}");
+    return 1;
 }
 
 static int EvaluatePython(string source, string fileName)
