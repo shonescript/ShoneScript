@@ -232,7 +232,15 @@ internal sealed partial class HtmlScriptHost
         var dataset = new DatasetObject(this, e) { Prototype = _nodePrototype.Prototype };
         var style = new InlineStyleObject(this, e) { Prototype = _nodePrototype.Prototype };
         Accessor(style, "cssText", _ => JsValue.From(e.GetAttribute("style") ?? ""), (_, v) => SetStyle(e, v.ToJsString()));
+        Accessor(style, "length", _ => JsValue.From((double)style.Declarations().Count));
+        Method(style, "item", 1, (_, a) =>
+        {
+            var index = (int)Arg(a, 0).ToNumber();
+            var names = style.Declarations();
+            return index >= 0 && index < names.Count ? JsValue.From(names[index]) : JsValue.From("");
+        });
         Method(style, "getPropertyValue", 1, (_, a) => JsValue.From(style.GetValue(Arg(a, 0).ToJsString())));
+        Method(style, "getPropertyPriority", 1, (_, a) => JsValue.From(style.GetPriority(Arg(a, 0).ToJsString())));
         Method(style, "setProperty", 2, (_, a) => { style.SetValue(Arg(a, 0).ToJsString(), Arg(a, 1).ToJsString(), a.Length > 2 ? a[2].ToJsString() : ""); return JsValue.Undefined; });
         Method(style, "removeProperty", 1, (_, a) =>
         {
@@ -320,13 +328,21 @@ internal sealed partial class HtmlScriptHost
         }
 
         public string GetValue(string name) => Read().TryGetValue(Normalize(name), out var value) ? value.Value : "";
+        public string GetPriority(string name) => Read().TryGetValue(Normalize(name), out var value) && value.Important ? "important" : "";
+        public List<string> Declarations() => [.. Read().Keys];
 
         public void SetValue(string name, string value, string priority)
         {
-            name = Normalize(name);
+            name = Normalize(name.Trim());
             if (name.Length == 0 || priority.Length != 0 && !priority.Equals("important", StringComparison.OrdinalIgnoreCase)) return;
             var values = Read();
-            if (value.Length == 0) values.Remove(name); else values[name] = (value, priority.Length != 0);
+            if (value.Length == 0) values.Remove(name);
+            else
+            {
+                var normalizedValue = value.Trim();
+                if (normalizedValue.Length == 0) return;
+                values[name] = (normalizedValue, priority.Length != 0);
+            }
             host.SetStyle(element, string.Join(' ', values.Select(pair => $"{pair.Key}: {pair.Value.Value}{(pair.Value.Important ? " !important" : "")};")));
         }
 

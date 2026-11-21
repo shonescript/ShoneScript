@@ -47,6 +47,30 @@ public sealed class HtmlWebApiTests
     }
 
     [Fact]
+    public void CssStyleDeclarationPreservesOrderPriorityAndSynchronizesCssText()
+    {
+        var errors = new List<HtmlScriptError>();
+        using var page = HtmlPage.Parse("""
+            <div id=e style="color: red; margin: 0; color: blue !important"></div>
+            <script>
+              const style = document.getElementById('e').style;
+              if (style.length !== 2 || style.item(0) !== 'color' || style.item(1) !== 'margin' ||
+                  style.getPropertyValue('COLOR') !== 'blue' || style.getPropertyPriority('color') !== 'important')
+                throw new Error('initial CSSOM state');
+              style.setProperty('padding', ' 4px ', 'important');
+              style.setProperty('margin', '2px');
+              if (style.length !== 3 || style.item(2) !== 'padding' || style.getPropertyPriority('padding') !== 'important')
+                throw new Error('updated CSSOM state');
+              const previous = style.removeProperty('color');
+              if (previous !== 'blue' || style.getPropertyPriority('color') !== '' || style.cssText !== 'margin: 2px; padding: 4px !important;')
+                throw new Error('CSSOM serialization');
+            </script>
+            """, new() { OnScriptError = errors.Add });
+        Assert.Empty(errors);
+        Assert.Equal("margin: 2px; padding: 4px !important;", page.Document.GetElementById("e")!.GetAttribute("style"));
+    }
+
+    [Fact]
     public void ReplaceWithMovesNodesAndInsertsLiteralTextInArgumentOrder()
     {
         var errors = new List<HtmlScriptError>();

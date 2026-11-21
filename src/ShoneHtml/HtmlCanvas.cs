@@ -254,6 +254,12 @@ internal sealed partial class HtmlScriptHost
         Method(_canvasContextPrototype, "restore", 0, (e, _) => { Context2D(e).Canvas.Restore(); return JsValue.Undefined; });
         Method(_canvasContextPrototype, "fillRect", 4, (e, a) => DrawRect(e, a, clear: false));
         Method(_canvasContextPrototype, "clearRect", 4, (e, a) => DrawRect(e, a, clear: true));
+        Method(_canvasContextPrototype, "reset", 0, (e, _) =>
+        {
+            var context = Context2D(e);
+            context.Canvas.Reset();
+            return JsValue.Undefined;
+        });
         Method(_canvasContextPrototype, "getContextAttributes", 0, (e, _) =>
         {
             var context = Context2D(e);

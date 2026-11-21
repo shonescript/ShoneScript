@@ -99,6 +99,28 @@ public sealed class HtmlCanvasTests
     }
 
     [Fact]
+    public void ContextResetClearsDrawingStatePixelsAndSavedStack()
+    {
+        var errors = new List<HtmlScriptError>();
+        using var page = HtmlPage.Parse("""
+            <canvas id=c width=2 height=1></canvas>
+            <script>
+              const ctx = document.getElementById('c').getContext('2d');
+              ctx.fillStyle = 'red';
+              ctx.save();
+              ctx.globalAlpha = 0.25;
+              ctx.fillRect(0, 0, 2, 1);
+              ctx.reset();
+              ctx.restore();
+              if (ctx.fillStyle !== '#000000' || ctx.globalAlpha !== 1 || ctx.getImageData(0, 0, 2, 1).data[3] !== 0)
+                throw new Error('reset did not restore the default state');
+            </script>
+            """, new() { OnScriptError = errors.Add });
+        Assert.Empty(errors);
+        Assert.Null(page.GetCanvasPixels(page.Document.GetElementById("c")!));
+    }
+
+    [Fact]
     public void RetainedImageDataBuffersHaveACombinedPageBudget()
     {
         var errors = new List<HtmlScriptError>();
