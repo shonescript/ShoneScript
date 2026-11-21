@@ -311,7 +311,7 @@ internal sealed partial class HtmlScriptHost
     {
         public bool External => Src is not null;
     }
-    private sealed record ModuleSource(Uri Address, ParsedModule Parsed, long Size);
-    private sealed record ModuleEntry(ParsedModule Parsed, IReadOnlyDictionary<string, Uri> Resolutions);
+    private sealed record ModuleSource(Uri Address, JsParsedModule Parsed, long Size);
+    private sealed record ModuleEntry(JsParsedModule Parsed, IReadOnlyDictionary<string, Uri> Resolutions);
     private sealed record ModuleGraph(Uri Root, Dictionary<Uri, ModuleEntry> Sources);
 }

@@ -18,8 +18,8 @@ public class RegExpTests
             function statement() {}
             /\d/.test('1') && first() && n === 3 && (function () { return 8; })() / 2 === 4;
             """;
-        Assert.Equal("true", new Engine().Evaluate(source).ToString());
-        Assert.Equal("true", new Engine().Evaluate("""`${/[}]/.test('}')}` === 'true' && 8 / /x/.test('x') === 8""").ToString());
+        Assert.Equal("true", new JsEngine().Evaluate(source).ToString());
+        Assert.Equal("true", new JsEngine().Evaluate("""`${/[}]/.test('}')}` === 'true' && 8 / /x/.test('x') === 8""").ToString());
     }
 
     [Fact]
@@ -50,14 +50,14 @@ public class RegExpTests
     [InlineData("/(/")]
     public void LiteralInvalidityIsAnEarlyError(string expression)
     {
-        var error = Assert.Throws<JsSyntaxException>(() => new Engine().ParseScript("function f() { return " + expression + "; }"));
+        var error = Assert.Throws<JsSyntaxException>(() => new JsEngine().ParseScript("function f() { return " + expression + "; }"));
         Assert.Equal(22, error.Offset);
     }
 
     [Fact]
     public void ConstructorsAndLiteralsHaveIndependentStateAndRealmPrototype()
     {
-        Assert.Equal("true", new Engine().Evaluate("""
+        Assert.Equal("true", new JsEngine().Evaluate("""
             function literal() { return /x/yg; }
             let a = literal(), b = literal(), c = new RegExp(a);
             a.lastIndex = 1;
@@ -65,13 +65,13 @@ public class RegExpTests
               a instanceof RegExp && a.flags === 'gy' && a.sticky && a.global && !a.ignoreCase &&
               RegExp().source === '(?:)' && /[/]/.source === '[/]' && String(RegExp('a/b', 'i')) === '/a\\/b/i';
             """).ToString());
-        Assert.Equal("SyntaxError", new Engine().Evaluate("try { RegExp('x', 'uu'); } catch (e) { e.name; }").ToString());
+        Assert.Equal("SyntaxError", new JsEngine().Evaluate("try { RegExp('x', 'uu'); } catch (e) { e.name; }").ToString());
     }
 
     [Fact]
     public void ExecAndStickyUseUtf16IndicesAndPresentOptionalCaptures()
     {
-        Assert.Equal("true", new Engine().Evaluate("""
+        Assert.Equal("true", new JsEngine().Evaluate("""
             let r = /(a)(b)?/gy;
             r.lastIndex = 2;
             let m = r.exec('😃a');
@@ -89,7 +89,7 @@ public class RegExpTests
     [Fact]
     public void JavaScriptAnchorsWhitespaceAndDotUseEcmaLineTerminators()
     {
-        Assert.Equal("true", new Engine().Evaluate("""
+        Assert.Equal("true", new JsEngine().Evaluate("""
             !/x$/.test('x\n') && /^x$/m.test('a\rx\u2028b') && !/./.test('\r') && /./s.test('\u2029') &&
                 /\s/.test('\uFEFF') && !/\s/.test('\u0085') && /[\s\S]/.test('\r') && /[^]/.test('\u2028') &&
                 /\a/.test('a') && !/[]/.test(']');
@@ -99,7 +99,7 @@ public class RegExpTests
     [Fact]
     public void StringMatchUsesCaptureResultsOrWholeGlobalMatchesAndAdvancesEmptyMatches()
     {
-        Assert.Equal("true", new Engine().Evaluate("""
+        Assert.Equal("true", new JsEngine().Evaluate("""
             let one = 'xab'.match('(a)(b)');
             let rx = /a/g; rx.lastIndex = 100;
             let many = 'aba'.match(rx);
@@ -113,7 +113,7 @@ public class RegExpTests
     [Fact]
     public void StringReplaceSupportsLiteralSearchTemplatesAndCallbacks()
     {
-        var engine = new Engine();
+        var engine = new JsEngine();
         Assert.Equal("a$-b-a-cc", engine.Evaluate("""'abc'.replace('b', "$$-$&-$`-$'")""").ToString());
         Assert.Equal("a_b_a_", engine.Evaluate("""'aba'.replace(/(?=.)|$/g, (_, i) => i === 0 ? '' : '_')""").ToString());
         Assert.Equal("ba-a0-ba-$9", engine.Evaluate("""'ab'.replace(/(a)(b)/, '$2$1-$10-$02$1-$9')""").ToString());
@@ -131,7 +131,7 @@ public class RegExpTests
     [Fact]
     public void BackendTimeoutAndReplacementAmplificationBecomeJavaScriptRangeErrors()
     {
-        var engine = new Engine();
+        var engine = new JsEngine();
         engine.SetGlobal("input", JsValue.From(new string('a', 100_000) + "!"));
         Assert.Equal("RegExp match time limit exceeded", engine.Evaluate("try { /^(a+)+$/.test(input); } catch (e) { e.message; }").ToString());
         engine.SetGlobal("input", JsValue.From(new string('a', 1_700)));
@@ -141,7 +141,7 @@ public class RegExpTests
     [Fact]
     public void RegexCapsPatternInputAndCumulativeMatchesAndChargesNativeWork()
     {
-        var engine = new Engine();
+        var engine = new JsEngine();
         engine.SetGlobal("longInput", JsValue.From(new string('a', 262_145)));
         engine.SetGlobal("manyMatches", JsValue.From(new string('a', 32_768)));
         engine.SetGlobal("longPattern", JsValue.From(new string('a', 4_097)));

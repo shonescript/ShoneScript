@@ -18,5 +18,5 @@ public class TypedArrayBuiltinTests
     [InlineData("let a = new Uint8Array([1,2,3]); let b=a.subarray(1); b[0]=9; a.join() === '1,9,3' && a.fill(4,1).join() === '1,4,4' && a.copyWithin(0,1).join() === '4,4,4'")]
     [InlineData("let a = new Uint8Array([1,2]); a.every(function(x){return x>0}) && a.some(function(x){return x===2}) && a.find(function(x){return x===2})===2 && a.findIndex(function(x){return x===2})===1 && a.includes(1) && a.indexOf(2)===1")]
     public void SupportsTypedArrayBaselineAndCopyingMethods(string script) =>
-        Assert.True(new ShoneJs.Engine().Evaluate(script).ToBoolean());
+        Assert.True(new ShoneJs.JsEngine().Evaluate(script).ToBoolean());
 }

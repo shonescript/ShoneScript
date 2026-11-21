@@ -13,7 +13,7 @@ public sealed class PythonInteropTests
     public void TransfersLargeIntegersWithoutRounding()
     {
         var python = new PythonEngine();
-        var js = new Engine();
+        var js = new JsEngine();
         js.SetGlobal("value", JsValueBridge.ToJavaScript(python.Evaluate("2 ** 80")));
         python.SetGlobal("value", JsValueBridge.ToPython(js.Evaluate("value + 1n")));
         Assert.Equal("1208925819614629174706177", python.Evaluate("value").ToString());

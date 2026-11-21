@@ -21,7 +21,7 @@ internal sealed partial class HtmlScriptHost : IDisposable
     private HtmlRendererDocument? Renderer => _page.RendererContext;
     private HtmlBrowserOptions? BrowserOptions => Renderer?.Options ?? _page.Browser?.Options;
     private string? _rendererFailure;
-    private readonly Engine _engine;
+    private readonly JsEngine _engine;
     private readonly HtmlTaskQueue _tasks;
     private int _dispatchDepth;
     private bool _checkpointFailed;
@@ -40,14 +40,14 @@ internal sealed partial class HtmlScriptHost : IDisposable
     {
         _page = page;
         _report = options.OnScriptError;
-        var engineOptions = new EngineOptions { MaximumLoopIterations = options.MaximumLoopIterations, CancellationToken = page.Lifetime };
+        var engineOptions = new JsEngineOptions { MaximumLoopIterations = options.MaximumLoopIterations, CancellationToken = page.Lifetime };
         if (Renderer is { } renderer)
         {
             engineOptions.MaximumPendingJobs = 1024;
             engineOptions.MaximumSourceLength = Math.Min(engineOptions.MaximumSourceLength, renderer.Options.MaximumResponseBytes);
             _createdNodes = Measure(page.Document, renderer.Options.MaximumDocumentDepth, renderer.Options.MaximumDocumentNodes, includeRoot: true);
         }
-        _engine = new Engine(engineOptions);
+        _engine = new JsEngine(engineOptions);
         _tasks = new HtmlTaskQueue(page.Context, page.Lifetime, RunTask);
         var objectPrototype = ((JsObject)_engine.GetGlobal("Object").Data!).Get("prototype").Data as JsObject;
         _eventTargetPrototype = new JsObject { Prototype = objectPrototype };

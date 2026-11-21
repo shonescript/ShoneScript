@@ -18,7 +18,7 @@ public class RuntimeTests
     [InlineData("9007199254740993n > 9007199254740992", true)]
     [InlineData("9007199254740993n == '9007199254740993'", true)]
     [InlineData("Symbol('x') === Symbol('x')", false)]
-    public void ComparesValues(string script, bool expected) => Assert.Equal(expected, new Engine().Evaluate(script).Data);
+    public void ComparesValues(string script, bool expected) => Assert.Equal(expected, new JsEngine().Evaluate(script).Data);
 
     [Theory]
     [InlineData("const x = 1; x = 2", "TypeError")]
@@ -35,7 +35,7 @@ public class RuntimeTests
     [InlineData("BigInt('-0x1')", "SyntaxError")]
     public void ReportsJavaScriptError(string source, string errorName)
     {
-        var engine = new Engine();
+        var engine = new JsEngine();
         var script = engine.ParseScript(source);
         Assert.Equal(errorName, Assert.Throws<JsException>(() => engine.Execute(script)).ErrorName);
     }
@@ -81,5 +81,5 @@ public class RuntimeTests
     [InlineData("let o = {valueOf(){return this;}, toString(){return '4';}}; o == 4", "true")]
     [InlineData("let o = {}; let key = {valueOf(){return 'wrong';}, toString(){return 'right';}}; o[key] = 7; o.right", "7")]
     [InlineData("let s = ''; let a = {valueOf(){s += 'a'; return 1;}}, b = {valueOf(){s += 'b'; return 2;}}; a > b; s", "ab")]
-    public void EvaluatesSemantics(string source, string expected) => Assert.Equal(expected, new Engine().Evaluate(source).ToJsString());
+    public void EvaluatesSemantics(string source, string expected) => Assert.Equal(expected, new JsEngine().Evaluate(source).ToJsString());
 }

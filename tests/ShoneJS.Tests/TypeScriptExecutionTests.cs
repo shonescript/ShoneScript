@@ -17,14 +17,14 @@ public class TypeScriptExecutionTests
     [InlineData("let o = { x: 42, f: function () { return this.x; } }; o.f!()", "42")]
     public void ExecutesTypeScriptDirectly(string source, string expected)
     {
-        var engine = new Engine();
+        var engine = new JsEngine();
         Assert.Equal(expected, engine.EvaluateTypeScript(source).ToString());
     }
 
     [Fact]
     public void ParseTypeScriptDoesNotExecuteSource()
     {
-        var engine = new Engine();
+        var engine = new JsEngine();
         engine.SetGlobal("changed", JsValue.From(false));
 
         var parsed = engine.ParseTypeScript("changed = true;");
@@ -36,13 +36,13 @@ public class TypeScriptExecutionTests
 
     [Fact]
     public void TypeScriptSyntaxErrorsAreReportedByParser() =>
-        Assert.Throws<Parsing.JsSyntaxException>(() => new Engine().EvaluateTypeScript("let answer: number = ;"));
+        Assert.Throws<Parsing.JsSyntaxException>(() => new JsEngine().EvaluateTypeScript("let answer: number = ;"));
 
     [Fact]
     public void TypeScriptTypesAreNotStaticallyChecked() =>
-        Assert.Equal("x", new Engine().EvaluateTypeScript("let value: number = 'x'; value").ToString());
+        Assert.Equal("x", new JsEngine().EvaluateTypeScript("let value: number = 'x'; value").ToString());
 
     [Fact]
     public void JavaScriptEntryPointDoesNotAcceptTypeAnnotations() =>
-        Assert.Throws<Parsing.JsSyntaxException>(() => new Engine().Evaluate("let answer: number = 42;"));
+        Assert.Throws<Parsing.JsSyntaxException>(() => new JsEngine().Evaluate("let answer: number = 42;"));
 }

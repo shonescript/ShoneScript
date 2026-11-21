@@ -15,7 +15,7 @@ public class WeakBuiltinsTests
     [InlineData("let k = Symbol('private'); let m = new WeakMap(); m.set(k, 3); m.get(k) === 3 && m.has(k)")]
     [InlineData("let k = Symbol.for('shared'); let m = new WeakMap(); let ok = false; try { m.set(k, 3); } catch (e) { ok = true; } ok")]
     [InlineData("let k = Symbol.for('shared-ref'); let ok = false; try { new WeakRef(k); } catch (e) { ok = true; } ok")]
-    public void SupportsWeakBuiltins(string script) => Assert.True(new Engine().Evaluate(script).ToBoolean());
+    public void SupportsWeakBuiltins(string script) => Assert.True(new JsEngine().Evaluate(script).ToBoolean());
 
     [Theory]
     [InlineData("new WeakMap().set(1, 2)")]
@@ -28,5 +28,5 @@ public class WeakBuiltinsTests
     [InlineData("WeakRef({})")]
     [InlineData("WeakMap.prototype.has.call({}, {})")]
     public void RejectsInvalidWeakBuiltinUsage(string script) =>
-        Assert.Equal("TypeError", Assert.Throws<JsException>(() => new Engine().Evaluate(script)).ErrorName);
+        Assert.Equal("TypeError", Assert.Throws<JsException>(() => new JsEngine().Evaluate(script)).ErrorName);
 }

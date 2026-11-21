@@ -162,8 +162,8 @@ internal static class Program
     private static void ExecuteVariant(TestCatalog catalog, TestCase test, Mode mode)
     {
         // Wall-clock enforcement belongs to the parent process, including for loops and recursion.
-        var engine = new Engine(new EngineOptions { MaximumLoopIterations = int.MaxValue });
-        ParsedScript script;
+        var engine = new JsEngine(new JsEngineOptions { MaximumLoopIterations = int.MaxValue });
+        JsParsedScript script;
         try { script = engine.ParseScript(test.Source, forceStrict: mode == Mode.Strict); }
         catch (JsSyntaxException error)
         {

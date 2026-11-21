@@ -18,7 +18,7 @@ public class ArrayBuiltinTests
     [InlineData("let fail = function() { throw 1; }; Array.isArray(new Proxy(new Proxy([], {get: fail}), {getPrototypeOf: fail})) && !Array.isArray(new Proxy({}, {}))")]
     [InlineData("let d = Object.getOwnPropertyDescriptor(Array.prototype, 'map'); d.writable && d.configurable && !d.enumerable && d.value.name === 'map' && d.value.length === 1")]
     public void InstallsRealmArrayConstructor(string script) =>
-        Assert.True(new Engine().Evaluate(script).ToBoolean());
+        Assert.True(new JsEngine().Evaluate(script).ToBoolean());
 
     [Theory]
     [InlineData("Array(-1)", "RangeError")]
@@ -35,7 +35,7 @@ public class ArrayBuiltinTests
     [InlineData("Object.seal([0]).pop()", "TypeError")]
     [InlineData("let a = {length: 9007199254740991, push: Array.prototype.push}; a.push(1)", "TypeError")]
     public void RejectsInvalidArrayOperations(string script, string errorName) =>
-        Assert.Equal(errorName, Assert.Throws<JsException>(() => new Engine().Evaluate(script)).ErrorName);
+        Assert.Equal(errorName, Assert.Throws<JsException>(() => new JsEngine().Evaluate(script)).ErrorName);
 
     [Theory]
     [InlineData("let a = [, 2]; a.push(3) === 3 && a.pop() === 3 && a.unshift(1) === 3 && !a.hasOwnProperty(1) && a.shift() === 1 && a.length === 2 && !a.hasOwnProperty(0) && a[1] === 2")]
@@ -53,7 +53,7 @@ public class ArrayBuiltinTests
     [InlineData("let a = Array(4294967295); a[4294967294] = 'last'; a.pop() === 'last' && a.length === 4294967294")]
     [InlineData("let a = [, NaN, -0, 3, 3]; a.includes(undefined) && a.indexOf(undefined) === -1 && a.includes(NaN) && a.indexOf(NaN) === -1 && a.includes(0) && a.indexOf(3, -1) === 4 && a.lastIndexOf(3) === 4 && a.lastIndexOf(3, undefined) === -1 && a.lastIndexOf(3, -2) === 3")]
     public void HandlesSparseArrayOperations(string script) =>
-        Assert.True(new Engine().Evaluate(script).ToBoolean());
+        Assert.True(new JsEngine().Evaluate(script).ToBoolean());
 
     [Theory]
     [InlineData("let a = [, 2, , 4]; let seen = ''; let context = {}; let value = a.findLast(function(v, i, source) { if (source !== a || this !== context) throw 'bad'; seen = seen + i; return i === 1; }, context); value === 2 && seen === '321'")]
@@ -66,23 +66,23 @@ public class ArrayBuiltinTests
     [InlineData("let log = ''; let a = [1, 2, 3]; let b = a.toSpliced({valueOf: function() { log = log + 's'; return 1; }}, {valueOf: function() { log = log + 'd'; return 1; }}, 8); log === 'sd' && b.join() === '1,8,3' && a.join() === '1,2,3'")]
     [InlineData("let log = ''; let a = [1, 2]; let b = a.with({valueOf: function() { log = log + 'i'; return 0; }}, 9); log === 'i' && b.join() === '9,2' && a.join() === '1,2'")]
     public void SupportsChangeArrayByCopyMethods(string script) =>
-        Assert.True(new Engine().Evaluate(script).ToBoolean());
+        Assert.True(new JsEngine().Evaluate(script).ToBoolean());
 
     [Theory]
     [InlineData("[].findLast(1)")]
     [InlineData("[].findLastIndex(null)")]
     [InlineData("[].toSorted(1)")]
     public void RejectsInvalidNewArrayMethodArguments(string script) =>
-        Assert.Equal("TypeError", Assert.Throws<JsException>(() => new Engine().Evaluate(script)).ErrorName);
+        Assert.Equal("TypeError", Assert.Throws<JsException>(() => new JsEngine().Evaluate(script)).ErrorName);
 
     [Fact]
     public void WithOutOfRangeIndexThrowsRangeError() =>
-        Assert.Equal("RangeError", Assert.Throws<JsException>(() => new Engine().Evaluate("[1].with(1, 2)")).ErrorName);
+        Assert.Equal("RangeError", Assert.Throws<JsException>(() => new JsEngine().Evaluate("[1].with(1, 2)")).ErrorName);
 
     [Fact]
     public void CallbackMethodsPreserveHolesOrVisitThemAsSpecified()
     {
-        var result = new Engine().Evaluate("""
+        var result = new JsEngine().Evaluate("""
             let a = [, 2, , 4];
             let context = {n: 3};
             let called = '';
@@ -106,7 +106,7 @@ public class ArrayBuiltinTests
     [Fact]
     public void IterationCapturesLengthAndRechecksIndexedProperties()
     {
-        var result = new Engine().Evaluate("""
+        var result = new JsEngine().Evaluate("""
             let a = [1, 2, , 4];
             let seen = [];
             a.forEach(function(value, index) {
@@ -125,7 +125,7 @@ public class ArrayBuiltinTests
     [Fact]
     public void MethodsUseArrayLikeReceiversAndInheritedIndices()
     {
-        var result = new Engine().Evaluate("""
+        var result = new JsEngine().Evaluate("""
             let proto = {1: 'B'};
             let source = Object.create(proto);
             source[0] = 'A';
@@ -141,7 +141,7 @@ public class ArrayBuiltinTests
     [Fact]
     public void PrimitiveStringReceiversExposeCharactersAndBoxedCallbackReceiver()
     {
-        var engine = new Engine();
+        var engine = new JsEngine();
         var map = Assert.IsType<JsFunction>(engine.Evaluate("Array.prototype.map").Data);
         var callback = new JsFunction(args =>
         {

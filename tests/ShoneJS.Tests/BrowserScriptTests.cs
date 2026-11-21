@@ -14,7 +14,7 @@ public class BrowserScriptTests
     [InlineData("let async = x => x + 1; async(4)", "5")]
     [InlineData("let user = {name: 'JS'}; `${user?.name ?? 'missing'}`", "JS")]
     public void SupportsBrowserScriptSyntax(string script, string expected) =>
-        Assert.Equal(expected, new Engine().Evaluate(script).ToJsString());
+        Assert.Equal(expected, new JsEngine().Evaluate(script).ToJsString());
 
     [Theory]
     [InlineData("'a..b.'.split('.').join('|')", "a||b|")]
@@ -54,7 +54,7 @@ public class BrowserScriptTests
     [InlineData("new Date(-8640000000000000).toISOString()", "-271821-04-20T00:00:00.000Z")]
     [InlineData("new Date(8640000000000000).toISOString()", "+275760-09-13T00:00:00.000Z")]
     public void FormatsBrowserNumbersAndDates(string script, string expected) =>
-        Assert.Equal(expected, new Engine().Evaluate(script).ToJsString());
+        Assert.Equal(expected, new JsEngine().Evaluate(script).ToJsString());
 
     [Theory]
     [InlineData("Math.round(1n)", "TypeError")]
@@ -65,13 +65,13 @@ public class BrowserScriptTests
     [InlineData("new Date(8640000000000001).toISOString()", "RangeError")]
     [InlineData("Date.prototype.toISOString()", "TypeError")]
     public void RejectsInvalidBrowserNumberAndDateInputs(string expression, string errorName) =>
-        Assert.True(new Engine().Evaluate($"try {{ {expression}; false; }} catch (err) {{ err instanceof {errorName}; }}").ToBoolean());
+        Assert.True(new JsEngine().Evaluate($"try {{ {expression}; false; }} catch (err) {{ err instanceof {errorName}; }}").ToBoolean());
 
     [Fact]
     public void NewDateWithoutArgumentsFormatsARecentUtcTimestamp()
     {
         var before = DateTimeOffset.UtcNow;
-        var text = new Engine().Evaluate("new Date().toISOString()").ToJsString();
+        var text = new JsEngine().Evaluate("new Date().toISOString()").ToJsString();
         var after = DateTimeOffset.UtcNow;
         var parsed = DateTimeOffset.ParseExact(text, "yyyy-MM-dd'T'HH:mm:ss.fff'Z'", System.Globalization.CultureInfo.InvariantCulture,
             System.Globalization.DateTimeStyles.AssumeUniversal);
@@ -83,12 +83,12 @@ public class BrowserScriptTests
     [InlineData("let f = async (await) => 1;")]
     [InlineData("let f = (x)\n=> x;")]
     [InlineData("async function f() { function inner() { return await 1; } }")]
-    public void RejectsInvalidArrowOrAwaitSyntax(string script) => Assert.Throws<JsSyntaxException>(() => new Engine().ParseScript(script));
+    public void RejectsInvalidArrowOrAwaitSyntax(string script) => Assert.Throws<JsSyntaxException>(() => new JsEngine().ParseScript(script));
 
     [Fact]
     public void AsyncFunctionsSuspendAndRestoreScopesInFifoOrderOnOwnerThread()
     {
-        var engine = new Engine();
+        var engine = new JsEngine();
         var promise = engine.CreatePromise(out var resolve, out _);
         engine.SetGlobal("native", promise);
         Assert.Equal("ba", engine.Evaluate("""
@@ -119,7 +119,7 @@ public class BrowserScriptTests
     [Fact]
     public void AsyncMethodKeepsItsReceiverAcrossAwait()
     {
-        var engine = new Engine();
+        var engine = new JsEngine();
         engine.Evaluate("let obj = { value: 7, async get() { await 0; return this.value; } }; obj.get().then(x => { globalThis.result = x; });");
         engine.DrainJobs();
         Assert.Equal(7, engine.GetGlobal("result").ToNumber());
@@ -128,7 +128,7 @@ public class BrowserScriptTests
     [Fact]
     public void AwaitKeepsReferencesAndRunsCatchAndFinallyAcrossSuspensions()
     {
-        var engine = new Engine();
+        var engine = new JsEngine();
         engine.Evaluate("""
             let trace = '';
             let obj = { value: 1 };
@@ -157,7 +157,7 @@ public class BrowserScriptTests
     [Fact]
     public void ModulesLinkBeforeEvaluationAndKeepBindingsLiveAcrossReexports()
     {
-        var engine = new Engine();
+        var engine = new JsEngine();
         engine.Evaluate("globalThis.log = ''; globalThis.runs = 0;");
         Register(engine, "dep.js", "runs++; export let value = 1; export function inc() { value++; } export default 9;");
         Register(engine, "bridge.js", "export {value as count, default} from './dep.js'; export * from './dep.js';");
@@ -185,7 +185,7 @@ public class BrowserScriptTests
     [Fact]
     public void CyclicFunctionsAreLinkedBeforeBodyEvaluation()
     {
-        var engine = new Engine();
+        var engine = new JsEngine();
         var first = Register(engine, "a.js", "import {a} from './b.js'; export function get() { return 4; } globalThis.cycle = a;");
         Register(engine, "b.js", "import {get} from './a.js'; export const a = get();");
         engine.EvaluateModule(first);
@@ -195,7 +195,7 @@ public class BrowserScriptTests
     [Fact]
     public void ModuleAwaitSuspendsDependentExecutionAndRejectionIsCached()
     {
-        var engine = new Engine();
+        var engine = new JsEngine();
         var promise = engine.CreatePromise(out _, out var reject);
         engine.SetGlobal("gate", promise);
         engine.SetGlobal("trace", JsValue.From(""));
@@ -214,7 +214,7 @@ public class BrowserScriptTests
     [Fact]
     public void TopLevelAwaitWaitsForHostPromiseBeforeExecutingImporter()
     {
-        var engine = new Engine();
+        var engine = new JsEngine();
         var promise = engine.CreatePromise(out var resolve, out _);
         engine.SetGlobal("gate", promise);
         engine.SetGlobal("trace", JsValue.From(""));
@@ -230,7 +230,7 @@ public class BrowserScriptTests
     [Fact]
     public void RejectedAsyncDependencyDoesNotWaitForAnotherPendingDependency()
     {
-        var engine = new Engine();
+        var engine = new JsEngine();
         Register(engine, "pending.js", "await new Promise(() => {});");
         Register(engine, "failed.js", "await Promise.reject('failed');");
         var root = Register(engine, "root.js", "import './pending.js'; import './failed.js'; globalThis.reached = true;");
@@ -244,7 +244,7 @@ public class BrowserScriptTests
     [Fact]
     public void MissingExportRejectsBeforeAnyModuleBodyRuns()
     {
-        var engine = new Engine();
+        var engine = new JsEngine();
         Register(engine, "wrong.js", "globalThis.sawWrong = true; export const present = 1;");
         var root = Register(engine, "root.js", "import {missing} from './wrong.js'; globalThis.sawRoot = true;");
         engine.SetGlobal("evaluation", engine.EvaluateModule(root));
@@ -259,12 +259,12 @@ public class BrowserScriptTests
     [InlineData("export const x = 1; export {x};")]
     [InlineData("import {x} from 'dep'; const x = 1;")]
     [InlineData("if (true) { export const x = 1; }")]
-    public void ModuleEarlyErrors(string source) => Assert.Throws<JsSyntaxException>(() => new Engine().ParseModule(source));
+    public void ModuleEarlyErrors(string source) => Assert.Throws<JsSyntaxException>(() => new JsEngine().ParseModule(source));
 
     [Fact]
     public void ExecutionBudgetsBoundStraightLineCodeAndQueuedJobs()
     {
-        var engine = new Engine(new EngineOptions { MaximumExecutionSteps = 20, MaximumPendingJobs = 2 });
+        var engine = new JsEngine(new JsEngineOptions { MaximumExecutionSteps = 20, MaximumPendingJobs = 2 });
         Assert.Throws<InvalidOperationException>(() => engine.Evaluate(string.Concat(Enumerable.Repeat("1 + 2;", 100))));
         engine.EnqueueMicrotask(() => { });
         engine.EnqueueMicrotask(() => { });
@@ -280,7 +280,7 @@ public class BrowserScriptTests
     [InlineData("new ArrayBuffer(2147483647)")]
     public void NativeHotPathsAlsoConsumeBudget(string script)
     {
-        var engine = new Engine(new EngineOptions { MaximumExecutionSteps = 50 });
+        var engine = new JsEngine(new JsEngineOptions { MaximumExecutionSteps = 50 });
         Assert.Throws<InvalidOperationException>(() => engine.Evaluate(script));
     }
 
@@ -288,7 +288,7 @@ public class BrowserScriptTests
     public void CancelsParsingExecutionAndPendingMicrotasks()
     {
         using var lifetime = new CancellationTokenSource();
-        var engine = new Engine(new EngineOptions { CancellationToken = lifetime.Token });
+        var engine = new JsEngine(new JsEngineOptions { CancellationToken = lifetime.Token });
         using var parse = new CancellationTokenSource();
         parse.Cancel();
         Assert.Throws<OperationCanceledException>(() => engine.ParseModule("export const x = 1", parse.Token));
@@ -297,10 +297,10 @@ public class BrowserScriptTests
         engine.EnqueueMicrotask(() => throw new Exception("Canceled job executed"));
         Assert.Throws<OperationCanceledException>(() => engine.Evaluate("try { cancel(); while (true) {} } catch (_) { 1; }"));
         Assert.Throws<OperationCanceledException>(() => engine.DrainJobs());
-        Assert.Throws<InvalidOperationException>(() => new Engine(new EngineOptions { MaximumSourceLength = 2 }).ParseScript("123"));
+        Assert.Throws<InvalidOperationException>(() => new JsEngine(new JsEngineOptions { MaximumSourceLength = 2 }).ParseScript("123"));
     }
 
-    private static Uri Register(Engine engine, string location, string code)
+    private static Uri Register(JsEngine engine, string location, string code)
     {
         var url = new Uri(new Uri("https://fixture.test/"), location);
         engine.RegisterModule(url, engine.ParseModule(code));

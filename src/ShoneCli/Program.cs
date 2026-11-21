@@ -68,7 +68,7 @@ if (language is not null)
     return 2;
 }
 
-var engine = new Engine(new EngineOptions { EnableBigFloat = enableBigFloat });
+var engine = new JsEngine(new JsEngineOptions { EnableBigFloat = enableBigFloat });
 
 if (args is ["-e", var source])
     return Evaluate(engine, source, typeScript);
@@ -181,7 +181,7 @@ static int EvaluatePython(string source, string fileName)
 }
 
 // Keep script evaluation and job draining together so promise jobs finish before the result is printed.
-static int Evaluate(Engine engine, string source, bool typeScript = false)
+static int Evaluate(JsEngine engine, string source, bool typeScript = false)
 {
     try
     {

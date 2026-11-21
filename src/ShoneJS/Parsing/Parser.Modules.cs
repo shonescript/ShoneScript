@@ -28,7 +28,7 @@ public sealed partial class Parser
         return new ImportMetaExpr();
     }
 
-    internal ParsedModule ParseModule()
+    internal JsParsedModule ParseModule()
     {
         cancellationToken.ThrowIfCancellationRequested();
         var statements = new List<Stmt>();
@@ -162,7 +162,7 @@ public sealed partial class Parser
             if (export.Exported is { } name && !names.Add(name)) throw Error($"Duplicate export '{name}'", Current);
             if (export.Local is { } local && !locals.Contains(local)) throw Error($"Export '{local}' is not declared", Current);
         }
-        return new ParsedModule(statements, imports, exports, requests);
+        return new JsParsedModule(statements, imports, exports, requests);
     }
 
     private Token LocalName()

@@ -10,7 +10,7 @@ public class PromiseTests
     [Fact]
     public void ExecutorIsSynchronousAndReactionsRunInFifoOrderAtCheckpoint()
     {
-        var engine = new Engine();
+        var engine = new JsEngine();
         var result = engine.Evaluate("""
             let log = '';
             let promise = new Promise(function (resolve, reject) {
@@ -34,7 +34,7 @@ public class PromiseTests
     [Fact]
     public void ResolutionGetsThenSynchronouslyAndInvokesItInAJob()
     {
-        var engine = new Engine();
+        var engine = new JsEngine();
         var result = engine.Evaluate("""
             let log = '';
             let thenable = { value: 7 };
@@ -111,14 +111,14 @@ public class PromiseTests
     [InlineData("let f = Promise.resolve; f(1);")]
     public void RejectsInvalidCallsSynchronously(string script)
     {
-        var error = Assert.Throws<JsException>(() => new Engine().Evaluate(script));
+        var error = Assert.Throws<JsException>(() => new JsEngine().Evaluate(script));
         Assert.Equal("TypeError", error.ErrorName);
     }
 
     [Fact]
     public void CanBorrowStaticResolveWithAnotherConstructor()
     {
-        Assert.Equal("5", new Engine().Evaluate("""
+        Assert.Equal("5", new JsEngine().Evaluate("""
             function Custom(executor) {
                 let result = this;
                 executor(function (value) { result.value = value; }, function () {});
@@ -132,7 +132,7 @@ public class PromiseTests
     [Fact]
     public void PendingPromisesCanSettleInALaterScript()
     {
-        var engine = new Engine();
+        var engine = new JsEngine();
         engine.Evaluate("let release; let result; new Promise(function (resolve) { release = resolve; }).then(function (x) { result = x; });");
         engine.DrainJobs();
         Assert.Equal(JsType.Undefined, engine.Evaluate("result").Type);
@@ -144,14 +144,14 @@ public class PromiseTests
     [Fact]
     public void RefusesAnUnboundedThenableJobChain()
     {
-        var engine = new Engine(new EngineOptions { MaximumLoopIterations = 5 });
+        var engine = new JsEngine(new JsEngineOptions { MaximumLoopIterations = 5 });
         engine.Evaluate("let t = { then: function (resolve) { resolve(t); } }; Promise.resolve(t);");
         Assert.Throws<InvalidOperationException>(engine.DrainJobs);
     }
 
     private static string RunRecorded(string script)
     {
-        var engine = new Engine();
+        var engine = new JsEngine();
         engine.Evaluate("let result = ''; function record(value) { result += String(value); } " + script);
         engine.DrainJobs();
         return engine.Evaluate("result").ToJsString();

@@ -15,7 +15,7 @@ public class ObjectBuiltinTests
     [InlineData("Reflect.ownKeys([1, 2])[2]", "length")]
     [InlineData("Object.getOwnPropertyNames('AB')[2]", "length")]
     public void EnumeratesOwnKeysInOrder(string script, string expected) =>
-        Assert.Equal(expected, new Engine().Evaluate(script).ToJsString());
+        Assert.Equal(expected, new JsEngine().Evaluate(script).ToJsString());
 
     [Theory]
     [InlineData("let p = {inherited: 1}; let o = Object.create(p, {own: {value: 2, enumerable: true}, hidden: {value: 3}}); Object.keys(o).length === 1 && Object.keys(o)[0] === 'own' && o.hidden === 3 && o.inherited === 1")]
@@ -34,12 +34,12 @@ public class ObjectBuiltinTests
     [InlineData("function F(x){this.x=x;} function G(){} let o=Reflect.construct(F,[4],G); o instanceof G && o.x===4")]
     [InlineData("function F(){} F.prototype=0; Object.getPrototypeOf(new F()) === Object.prototype")]
     public void ImplementsDescriptorPrototypeAndReflectOperations(string script) =>
-        Assert.True(new Engine().Evaluate(script).ToBoolean());
+        Assert.True(new JsEngine().Evaluate(script).ToBoolean());
 
     [Fact]
     public void EnumerableValuesRespectMutationsDuringIteration()
     {
-        var result = new Engine().Evaluate("""
+        var result = new JsEngine().Evaluate("""
             let source = {};
             Object.defineProperty(source, 'first', { enumerable: true, get: function() {
                 Reflect.deleteProperty(source, 'second');
@@ -57,7 +57,7 @@ public class ObjectBuiltinTests
     [Fact]
     public void DefinePropertiesConvertsAllDescriptorsBeforeDefiningAny()
     {
-        var result = new Engine().Evaluate("""
+        var result = new JsEngine().Evaluate("""
             let target = {};
             try { Object.defineProperties(target, { first: { value: 1 }, second: { get: 2 } }); }
             catch (e) { }
@@ -76,5 +76,5 @@ public class ObjectBuiltinTests
     [InlineData("Reflect.get({}, {toString: function() { return Symbol('x'); }})")]
     [InlineData("Object.setPrototypeOf(Object.prototype, {})")]
     public void RejectsInvalidArgumentsWithTypeError(string script) =>
-        Assert.Equal("TypeError", Assert.Throws<JsException>(() => new Engine().Evaluate(script)).ErrorName);
+        Assert.Equal("TypeError", Assert.Throws<JsException>(() => new JsEngine().Evaluate(script)).ErrorName);
 }

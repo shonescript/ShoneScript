@@ -14,7 +14,7 @@ public class JsonTests
     [InlineData("let o = JSON.parse('{\"__proto__\":{\"a\":1},\"x\":1,\"x\":2}'); o.x === 2 && o.hasOwnProperty('__proto__') && o.__proto__.a === 1 && Object.getPrototypeOf(o) === Object.prototype")]
     [InlineData("let a = JSON.parse('[1,[2]]'); Array.isArray(a[1]) && Object.getPrototypeOf(a) === Array.prototype")]
     [InlineData("JSON.parse.length === 2 && JSON.stringify.length === 3 && Object.keys(JSON).length === 0")]
-    public void ParsesIntoNativeValues(string script) => Assert.True(new Engine().Evaluate(script).ToBoolean());
+    public void ParsesIntoNativeValues(string script) => Assert.True(new JsEngine().Evaluate(script).ToBoolean());
 
     [Theory]
     [InlineData("JSON.parse()")]
@@ -32,12 +32,12 @@ public class JsonTests
     [InlineData("JSON.parse('\"line\\nfeed\"')")]
     [InlineData("JSON.parse('\"\\\\u1X00\"')")]
     public void RejectsInvalidJson(string script) =>
-        Assert.Equal("SyntaxError", Assert.Throws<JsException>(() => new Engine().Evaluate(script)).ErrorName);
+        Assert.Equal("SyntaxError", Assert.Throws<JsException>(() => new JsEngine().Evaluate(script)).ErrorName);
 
     [Fact]
     public void PreservesUtf16AndEscapesOnlyWhereRequired()
     {
-        var engine = new Engine();
+        var engine = new JsEngine();
         Assert.Equal("\ud800", engine.Evaluate("""JSON.parse('"\\uD800"')""").ToJsString());
         Assert.Equal("\"\\ud800\"", engine.Evaluate("""JSON.stringify(JSON.parse('"\\uD800"'))""").ToJsString());
         Assert.Equal("\"😀é/<>\\t\\n\\u0001\"", engine.Evaluate("""JSON.stringify(JSON.parse('"😀é/<>\\t\\n\\u0001"'))""").ToJsString());
@@ -46,7 +46,7 @@ public class JsonTests
     [Fact]
     public void WalksReviverFromLeavesToRootAndDeletesProperties()
     {
-        var result = new Engine().Evaluate("""
+        var result = new JsEngine().Evaluate("""
             let keys = '';
             let result = JSON.parse('{"x":[1,2],"y":true}', function(key, value) {
                 keys += '[' + key + ']';
@@ -59,7 +59,7 @@ public class JsonTests
             keys === '[0][1][x][y][]' && result.length === 2 && !result.hasOwnProperty('0') && result[1] === 6;
             """);
         Assert.True(result.ToBoolean());
-        Assert.Equal(JsType.Undefined, new Engine().Evaluate("JSON.parse('1', function() {})").Type);
+        Assert.Equal(JsType.Undefined, new JsEngine().Evaluate("JSON.parse('1', function() {})").Type);
     }
 
     [Theory]
@@ -76,19 +76,19 @@ public class JsonTests
     [InlineData("JSON.stringify([1], null, Infinity)", "[\n          1\n]")]
     [InlineData("JSON.stringify(new Proxy([1, 2], {}))", "[1,2]")]
     public void StringifiesJsValues(string script, string expected) =>
-        Assert.Equal(expected, new Engine().Evaluate(script).ToJsString());
+        Assert.Equal(expected, new JsEngine().Evaluate(script).ToJsString());
 
     [Theory]
     [InlineData("JSON.stringify()")]
     [InlineData("JSON.stringify(Symbol('x'))")]
     [InlineData("JSON.stringify(function() {})")]
     public void ReturnsUndefinedForOmittedRootValues(string script) =>
-        Assert.Equal(JsType.Undefined, new Engine().Evaluate(script).Type);
+        Assert.Equal(JsType.Undefined, new JsEngine().Evaluate(script).Type);
 
     [Fact]
     public void CallsToJsonBeforeReplacerWithCorrectReceiversAndKeys()
     {
-        var result = new Engine().Evaluate("""
+        var result = new JsEngine().Evaluate("""
             let object = { x: { toJSON: function(key) { return this === object.x ? key + '!' : 'wrong'; } }, big: 3n };
             let calls = '';
             let text = JSON.stringify(object, function(key, value) {
@@ -109,5 +109,5 @@ public class JsonTests
     [InlineData("let o = {}; o.self = o; JSON.stringify(o)")]
     [InlineData("let a = []; a[0] = a; JSON.stringify(a)")]
     public void RejectsBigIntsAndCycles(string script) =>
-        Assert.Equal("TypeError", Assert.Throws<JsException>(() => new Engine().Evaluate(script)).ErrorName);
+        Assert.Equal("TypeError", Assert.Throws<JsException>(() => new JsEngine().Evaluate(script)).ErrorName);
 }

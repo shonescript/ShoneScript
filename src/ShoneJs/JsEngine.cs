@@ -7,7 +7,7 @@ using ShoneJs.Runtime;
 namespace ShoneJs;
 
 /// <summary>Configures features and execution limits for an engine.</summary>
-public sealed class EngineOptions
+public sealed class JsEngineOptions
 {
     /// <summary>Sets the iteration budget used by script execution and Promise job draining.</summary>
     public int MaximumLoopIterations { get; set; } = 1_000_000;
@@ -28,10 +28,10 @@ public sealed class EngineOptions
     public bool EnableBigFloat { get; set; }
 }
 
-/// <summary>A parsed JavaScript script that can be passed to <see cref="Engine.Execute"/>.</summary>
-public sealed class ParsedScript
+/// <summary>A parsed JavaScript script that can be passed to <see cref="JsEngine.Execute"/>.</summary>
+public sealed class JsParsedScript
 {
-    internal ParsedScript(List<Stmt> statements, bool strict)
+    internal JsParsedScript(List<Stmt> statements, bool strict)
     {
         Statements = statements;
         IsStrict = strict;
@@ -43,9 +43,9 @@ public sealed class ParsedScript
 }
 
 /// <summary>A parsed ECMAScript module and its static dependencies in source order.</summary>
-public sealed class ParsedModule
+public sealed class JsParsedModule
 {
-    internal ParsedModule(List<Stmt> statements, List<ModuleImport> imports, List<ModuleExport> exports, List<string> requests)
+    internal JsParsedModule(List<Stmt> statements, List<ModuleImport> imports, List<ModuleExport> exports, List<string> requests)
     {
         Statements = statements;
         Imports = imports;
@@ -62,45 +62,45 @@ public sealed class ParsedModule
 /// <summary>A parsed TypeScript script ready for direct execution.</summary>
 public sealed class CheckedTypeScript
 {
-    internal CheckedTypeScript(ParsedScript script) => Script = script;
-    internal ParsedScript Script { get; }
+    internal CheckedTypeScript(JsParsedScript script) => Script = script;
+    internal JsParsedScript Script { get; }
 }
 
 /// <summary>Parses and interprets JavaScript and supported TypeScript scripts.</summary>
 /// <remarks>Executions on an instance share globals and pending Promise jobs. Use a separate instance for independent sessions.</remarks>
-public sealed class Engine
+public sealed class JsEngine
 {
     private readonly Interpreter _interpreter;
     /// <summary>Gets the engine configuration.</summary>
-    public EngineOptions Options { get; }
+    public JsEngineOptions Options { get; }
     /// <summary>Creates an engine with a fresh global environment.</summary>
-    public Engine(EngineOptions? options = null)
+    public JsEngine(JsEngineOptions? options = null)
     {
-        Options = options ?? new EngineOptions();
+        Options = options ?? new JsEngineOptions();
         _interpreter = new Interpreter(Options.EnableBigFloat);
     }
 
     /// <summary>Parses JavaScript without executing it.</summary>
-    public ParsedScript ParseScript(string source) => ParseScript(source, cancellationToken: default);
+    public JsParsedScript ParseScript(string source) => ParseScript(source, cancellationToken: default);
 
-    public ParsedScript ParseScript(string source, CancellationToken cancellationToken) => ParseScript(source, forceStrict: false, cancellationToken);
+    public JsParsedScript ParseScript(string source, CancellationToken cancellationToken) => ParseScript(source, forceStrict: false, cancellationToken);
 
     /// <summary>Parses JavaScript with an option to enable strict mode without altering source positions.</summary>
-    public ParsedScript ParseScript(string source, bool forceStrict) => ParseScript(source, forceStrict, default);
+    public JsParsedScript ParseScript(string source, bool forceStrict) => ParseScript(source, forceStrict, default);
 
-    public ParsedScript ParseScript(string source, bool forceStrict, CancellationToken cancellationToken)
+    public JsParsedScript ParseScript(string source, bool forceStrict, CancellationToken cancellationToken)
     {
         using var linked = LinkParsingCancellation(source, cancellationToken);
         var token = linked?.Token ?? (cancellationToken.CanBeCanceled ? cancellationToken : Options.CancellationToken);
         var parser = new Parser(new Lexer(source, token), forceStrict: forceStrict, cancellationToken: token);
         var statements = parser.Parse();
-        return new ParsedScript(statements, parser.IsStrict);
+        return new JsParsedScript(statements, parser.IsStrict);
     }
 
     /// <summary>Executes a parsed script and returns its completion value.</summary>
-    public JsValue Execute(ParsedScript script) => Execute(script, default);
+    public JsValue Execute(JsParsedScript script) => Execute(script, default);
 
-    public JsValue Execute(ParsedScript script, CancellationToken cancellationToken)
+    public JsValue Execute(JsParsedScript script, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(script);
         ConfigureExecution();
@@ -114,7 +114,7 @@ public sealed class Engine
         Execute(ParseScript(source, cancellationToken), cancellationToken);
 
     /// <summary>Parses a strict module without linking or executing it.</summary>
-    public ParsedModule ParseModule(string source, CancellationToken cancellationToken = default)
+    public JsParsedModule ParseModule(string source, CancellationToken cancellationToken = default)
     {
         using var linked = LinkParsingCancellation(source, cancellationToken);
         var token = linked?.Token ?? (cancellationToken.CanBeCanceled ? cancellationToken : Options.CancellationToken);
@@ -122,7 +122,7 @@ public sealed class Engine
     }
 
     /// <summary>Registers a module on the engine owner thread before evaluating its graph.</summary>
-    public void RegisterModule(Uri url, ParsedModule module, IReadOnlyDictionary<string, Uri>? resolutions = null) =>
+    public void RegisterModule(Uri url, JsParsedModule module, IReadOnlyDictionary<string, Uri>? resolutions = null) =>
         _interpreter.RegisterModule(url, module, resolutions);
 
     /// <summary>Links and evaluates a registered graph, returning a Promise for its module namespace.</summary>
@@ -162,7 +162,7 @@ public sealed class Engine
         var token = Options.CancellationToken;
         var parser = new Parser(new Lexer(source, token), typeScript: true, cancellationToken: token);
         var statements = parser.ParseTypeScript();
-        return new CheckedTypeScript(new ParsedScript(statements, parser.IsStrict));
+        return new CheckedTypeScript(new JsParsedScript(statements, parser.IsStrict));
     }
 
     /// <summary>Interprets a previously parsed TypeScript script directly.</summary>

@@ -10,10 +10,10 @@ public sealed partial class Interpreter
     private readonly Dictionary<string, ModuleRecord> _modules = new(StringComparer.Ordinal);
     private ModuleRecord? _activeModule;
 
-    private sealed class ModuleRecord(Uri url, ParsedModule code, Dictionary<string, Uri> resolutions)
+    private sealed class ModuleRecord(Uri url, JsParsedModule code, Dictionary<string, Uri> resolutions)
     {
         public readonly Uri Url = url;
-        public readonly ParsedModule Code = code;
+        public readonly JsParsedModule Code = code;
         public readonly Dictionary<string, Uri> Resolutions = resolutions;
         public readonly Dictionary<string, ModuleRecord> Dependencies = new(StringComparer.Ordinal);
         public readonly Dictionary<string, ModuleImport> Imports = code.Imports.ToDictionary(import => import.Local, StringComparer.Ordinal);
@@ -45,7 +45,7 @@ public sealed partial class Interpreter
             descriptor.Writable != false && (descriptor.Value is not { } value || AbstractOperations.SameValue(value, current.Value!.Value));
     }
 
-    internal void RegisterModule(Uri url, ParsedModule module, IReadOnlyDictionary<string, Uri>? resolutions)
+    internal void RegisterModule(Uri url, JsParsedModule module, IReadOnlyDictionary<string, Uri>? resolutions)
     {
         ArgumentNullException.ThrowIfNull(url);
         ArgumentNullException.ThrowIfNull(module);

@@ -25,7 +25,7 @@ public class ProxyTests
     [InlineData("let r; let h = {}; Object.defineProperty(h, 'get', {get: function() { r.revoke(); return function(t, k) { return t[k]; }; }}); r = Proxy.revocable({x: 1}, h); r.proxy.x === 1")]
     [InlineData("let p = new Proxy({x: 1}, {ownKeys: function() { return ['x', 'extra']; }, getOwnPropertyDescriptor: function(t, k) { return Reflect.getOwnPropertyDescriptor(t, k); }}); let keys = Object.keys(p); keys.length === 1 && keys[0] === 'x'")]
     public void SupportsProxyOperations(string script) =>
-        Assert.True(new Engine().Evaluate(script).ToBoolean());
+        Assert.True(new JsEngine().Evaluate(script).ToBoolean());
 
     [Theory]
     [InlineData("Proxy({}, {})")]
@@ -64,7 +64,7 @@ public class ProxyTests
     [InlineData("let p = new Proxy({}, {isExtensible: function() { return false; }}); Object.isExtensible(p)")]
     [InlineData("let p = new Proxy({}, {preventExtensions: function() { return true; }}); Reflect.preventExtensions(p)")]
     public void RejectsInvalidArgumentsAndTrapResults(string script) =>
-        Assert.Equal("TypeError", Assert.Throws<JsException>(() => new Engine().Evaluate(script)).ErrorName);
+        Assert.Equal("TypeError", Assert.Throws<JsException>(() => new JsEngine().Evaluate(script)).ErrorName);
 
     [Theory]
     [InlineData("p.x")]
@@ -82,6 +82,6 @@ public class ProxyTests
     public void ThrowsForEveryRevokedInternalOperation(string operation)
     {
         var script = $"let result = Proxy.revocable({{}}, {{}}); let p = result.proxy; result.revoke(); {operation}";
-        Assert.Equal("TypeError", Assert.Throws<JsException>(() => new Engine().Evaluate(script)).ErrorName);
+        Assert.Equal("TypeError", Assert.Throws<JsException>(() => new JsEngine().Evaluate(script)).ErrorName);
     }
 }

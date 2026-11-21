@@ -8,12 +8,12 @@ namespace ShoneJs.Tests;
 
 public class BigFloatBuiltinTests
 {
-    private static Engine CreateEngine() => new(new EngineOptions { EnableBigFloat = true });
+    private static JsEngine CreateEngine() => new(new JsEngineOptions { EnableBigFloat = true });
 
     [Fact]
     public void GlobalIsOptInAndScopedToAnEngine()
     {
-        var disabled = new Engine();
+        var disabled = new JsEngine();
         var enabled = CreateEngine();
         var another = CreateEngine();
         Assert.True(disabled.Evaluate("typeof BigFloat === 'undefined' && !('BigFloat' in globalThis)").ToBoolean());
@@ -185,6 +185,6 @@ public class BigFloatBuiltinTests
         var source = "const bits: number = 256; BigFloat.pi(bits).toString()";
         var result = CreateEngine().EvaluateTypeScript(source);
         Assert.StartsWith("3.14159265358979323846264338327950288419716939937510", result.ToString());
-        Assert.Equal("ReferenceError", Assert.Throws<JsException>(() => new Engine().EvaluateTypeScript(source)).ErrorName);
+        Assert.Equal("ReferenceError", Assert.Throws<JsException>(() => new JsEngine().EvaluateTypeScript(source)).ErrorName);
     }
 }
